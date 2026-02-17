@@ -16,7 +16,7 @@ DB_PASSWORD = "34l95acp9v"
 DB_NAME = "kano2026"
 
 # 🔥 PUT YOUR BREVO API KEY HERE
-BREVO_API_KEY = "xsmtpsib-f97e32120e8bb5fa6595718d2a33cd17053f4c9fac4ae626ef0f547f2ad3cd8a-13A9Z4SHMzWiaIfF"
+BREVO_API_KEY = "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"
 
 # =====================================================
 # FASTAPI
