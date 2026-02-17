@@ -1,4 +1,4 @@
-import pyodbc
+import pymssql
 import smtplib
 import random
 import uuid
@@ -6,33 +6,32 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from email.message import EmailMessage
-import firebase_admin
-from firebase_admin import credentials, messaging
 
-#cred = credentials.Certificate("firebase_key.json")
-#firebase_admin.initialize_app(cred)
 # =====================================================
 # CONFIG
 # =====================================================
-DB_CONN_STR = (
-    "DRIVER={ODBC Driver 17 for SQL Server};"
-    "SERVER=kano2026.mssql.somee.com;"
-    "DATABASE=kano2026;"
-    "UID=Dhvanit_SQLLogin_1;"
-    "PWD=34l95acp9v;"
-    "Encrypt=yes;"
-    "TrustServerCertificate=yes;"
-)
+DB_SERVER = "kano2026.mssql.somee.com"
+DB_USER = "Dhvanit_SQLLogin_1"
+DB_PASSWORD = "34l95acp9v"
+DB_NAME = "kano2026"
 
 EMAIL_FROM = "patelkanostudent@gmail.com"
 EMAIL_APP_PASSWORD = "xrvx welj nagp bsbz"
 
 # =====================================================
-# UTILS
+# DB CONNECTION
 # =====================================================
 def get_connection():
-    return pyodbc.connect(DB_CONN_STR)
+    return pymssql.connect(
+        server=DB_SERVER,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME
+    )
 
+# =====================================================
+# UTILS
+# =====================================================
 def generate_otp():
     return str(random.randint(100000, 999999))
 
@@ -42,6 +41,7 @@ def send_otp_email(email, otp):
     msg["From"] = EMAIL_FROM
     msg["To"] = email
     msg.set_content(f"Your OTP is {otp}. Valid for 5 minutes.")
+
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
         server.send_message(msg)
@@ -83,94 +83,89 @@ class EmergencyLeave(BaseModel):
 
 class Action(BaseModel):
     leave_id: int
-    action: str   # APPROVED / REJECTED
+    action: str
 
 # =====================================================
-# STUDENT REGISTER + AUTO PROFESSOR ASSIGN
+# STUDENT REGISTER
 # =====================================================
 @app.post("/student/register")
 def student_register(data: StudentRegister):
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Email already exists
-    if cursor.execute(
-        "SELECT 1 FROM Users WHERE Email=?", data.student_email
-    ).fetchone():
+    # Check email
+    cursor.execute("SELECT 1 FROM Users WHERE Email=%s", data.student_email)
+    if cursor.fetchone():
         conn.close()
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Registration number exists
-    if cursor.execute(
-        "SELECT 1 FROM StudentProfile WHERE RegistrationNo=?",
-        data.registration_no
-    ).fetchone():
+    # Check registration no
+    cursor.execute("SELECT 1 FROM StudentProfile WHERE RegistrationNo=%s", data.registration_no)
+    if cursor.fetchone():
         conn.close()
         raise HTTPException(status_code=400, detail="Student already registered")
 
     # Insert user
-    cursor.execute("""
-        INSERT INTO Users (FullName, Email, Role)
-        VALUES (?, ?, 'STUDENT')
-    """, data.fullname, data.student_email)
+    cursor.execute(
+        "INSERT INTO Users (FullName, Email, Role) VALUES (%s, %s, 'STUDENT')",
+        (data.fullname, data.student_email)
+    )
 
-    student_id = cursor.execute("SELECT @@IDENTITY").fetchone()[0]
+    cursor.execute("SELECT SCOPE_IDENTITY()")
+    student_id = cursor.fetchone()[0]
 
-    # Insert student profile
+    # Insert profile
     cursor.execute("""
         INSERT INTO StudentProfile
         (StudentId, RollNo, RegistrationNo, Semester, StudentEmail, ParentEmail)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """,
-    student_id,
-    data.roll_no,
-    data.registration_no,
-    data.semester,
-    data.student_email,
-    data.parent_email)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (
+        student_id,
+        data.roll_no,
+        data.registration_no,
+        data.semester,
+        data.student_email,
+        data.parent_email
+    ))
 
-    # Auto assign professor (max 7 students per semester)
-    prof = cursor.execute("""
+    # Assign professor
+    cursor.execute("""
         SELECT p.ProfessorId
         FROM ProfessorProfile p
         LEFT JOIN StudentProfessorMapping sp
             ON sp.ProfessorId = p.ProfessorId
-            AND sp.Semester = ?
+            AND sp.Semester = %s
         GROUP BY p.ProfessorId
         HAVING COUNT(sp.StudentId) < 7
         ORDER BY COUNT(sp.StudentId)
-    """, data.semester).fetchone()
+    """, data.semester)
+
+    prof = cursor.fetchone()
 
     if not prof:
         conn.close()
         raise HTTPException(status_code=400, detail="No professor available")
 
     cursor.execute("""
-        INSERT INTO StudentProfessorMapping
-        (StudentId, ProfessorId, Semester)
-        VALUES (?, ?, ?)
-    """, student_id, prof[0], data.semester)
+        INSERT INTO StudentProfessorMapping (StudentId, ProfessorId, Semester)
+        VALUES (%s, %s, %s)
+    """, (student_id, prof[0], data.semester))
 
     conn.commit()
     conn.close()
 
-    return {
-        "message": "Student registered successfully",
-        "assigned_professor": prof[0]
-    }
+    return {"message": "Student registered", "professor": prof[0]}
 
 # =====================================================
-# OTP LOGIN
+# SEND OTP
 # =====================================================
 @app.post("/auth/send-otp")
 def send_otp(data: SendOTP):
     conn = get_connection()
     cursor = conn.cursor()
 
-    user = cursor.execute(
-        "SELECT UserId FROM Users WHERE Email=? AND IsActive=1",
-        data.email
-    ).fetchone()
+    cursor.execute("SELECT UserId FROM Users WHERE Email=%s AND IsActive=1", data.email)
+    user = cursor.fetchone()
 
     if not user:
         conn.close()
@@ -181,8 +176,8 @@ def send_otp(data: SendOTP):
 
     cursor.execute("""
         INSERT INTO EmailOTP (Email, OTPCode, ExpiryTime)
-        VALUES (?, ?, ?)
-    """, data.email, otp, expiry)
+        VALUES (%s, %s, %s)
+    """, (data.email, otp, expiry))
 
     conn.commit()
     conn.close()
@@ -190,96 +185,53 @@ def send_otp(data: SendOTP):
     send_otp_email(data.email, otp)
     return {"message": "OTP sent"}
 
+# =====================================================
+# VERIFY OTP
+# =====================================================
 @app.post("/auth/verify-otp")
 def verify_otp(data: OTPVerify):
     conn = get_connection()
     cursor = conn.cursor()
 
-    otp_row = cursor.execute("""
+    cursor.execute("""
         SELECT OTPId FROM EmailOTP
-        WHERE Email=? AND OTPCode=? AND IsUsed=0 AND ExpiryTime>=GETDATE()
-    """, data.email, data.otp).fetchone()
+        WHERE Email=%s AND OTPCode=%s AND IsUsed=0 AND ExpiryTime>=GETDATE()
+    """, (data.email, data.otp))
+
+    otp_row = cursor.fetchone()
 
     if not otp_row:
         conn.close()
         raise HTTPException(status_code=400, detail="Invalid or expired OTP")
 
-    cursor.execute("UPDATE EmailOTP SET IsUsed=1 WHERE OTPId=?", otp_row[0])
+    cursor.execute("UPDATE EmailOTP SET IsUsed=1 WHERE OTPId=%s", otp_row[0])
 
-    user = cursor.execute("""
-        SELECT UserId, Role FROM Users WHERE Email=? AND IsActive=1
-    """, data.email).fetchone()
+    cursor.execute("SELECT UserId, Role FROM Users WHERE Email=%s AND IsActive=1", data.email)
+    user = cursor.fetchone()
 
     token = str(uuid.uuid4())
 
-    cursor.execute("UPDATE LoginSessions SET IsActive=0 WHERE UserId=?", user[0])
-    cursor.execute(
-        "INSERT INTO LoginSessions (UserId, Token) VALUES (?, ?)",
-        user[0], token
-    )
+    cursor.execute("UPDATE LoginSessions SET IsActive=0 WHERE UserId=%s", user[0])
+    cursor.execute("INSERT INTO LoginSessions (UserId, Token) VALUES (%s, %s)", (user[0], token))
 
     conn.commit()
     conn.close()
 
-    return {
-        "login": "success",
-        "token": token,
-        "user_id": user[0],
-        "role": user[1]
-    }
+    return {"login": "success", "token": token, "user_id": user[0], "role": user[1]}
 
 # =====================================================
-# APPLY NORMAL LEAVE
+# APPLY LEAVE
 # =====================================================
 @app.post("/leave/apply")
 def apply_leave(data: LeaveApply):
     conn = get_connection()
     cursor = conn.cursor()
 
-    prof = cursor.execute("""
-        SELECT ProfessorId FROM StudentProfessorMapping
-        WHERE StudentId=?
-    """, data.student_id).fetchone()
+    cursor.execute("SELECT ProfessorId FROM StudentProfessorMapping WHERE StudentId=%s", data.student_id)
+    prof = cursor.fetchone()
 
-    if not prof:
-        conn.close()
-        raise HTTPException(status_code=400, detail="Professor not assigned")
-
-    dean = cursor.execute("SELECT DeanId FROM DeanProfile").fetchone()
-    if not dean:
-        conn.close()
-        raise HTTPException(status_code=500, detail="Dean not configured")
-
-    cursor.execute("""
-        INSERT INTO LeaveApplications
-        (StudentId, ProfessorId, DeanId, FromDate, ToDate, Reason)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """,
-    data.student_id,
-    prof[0],
-    dean[0],
-    data.from_date,
-    data.to_date,
-    data.reason)
-
-    conn.commit()
-    conn.close()
-    return {"message": "Leave applied"}
-
-# =====================================================
-# EMERGENCY LEAVE (SKIP PROFESSOR)
-# =====================================================
-@app.post("/leave/emergency")
-def emergency_leave(data: EmergencyLeave):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    prof = cursor.execute("""
-        SELECT ProfessorId FROM StudentProfessorMapping
-        WHERE StudentId=?
-    """, data.student_id).fetchone()
-
-    dean = cursor.execute("SELECT DeanId FROM DeanProfile").fetchone()
+    cursor.execute("SELECT DeanId FROM DeanProfile")
+    dean = cursor.fetchone()
 
     if not prof or not dean:
         conn.close()
@@ -287,57 +239,25 @@ def emergency_leave(data: EmergencyLeave):
 
     cursor.execute("""
         INSERT INTO LeaveApplications
-        (StudentId, ProfessorId, DeanId, ProfessorStatus,
-         FromDate, ToDate, Reason)
-        VALUES (?, ?, ?, 'SKIPPED', ?, ?, ?)
-    """,
-    data.student_id,
-    prof[0],
-    dean[0],
-    data.from_date,
-    data.to_date,
-    data.reason)
+        (StudentId, ProfessorId, DeanId, FromDate, ToDate, Reason)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (
+        data.student_id,
+        prof[0],
+        dean[0],
+        data.from_date,
+        data.to_date,
+        data.reason
+    ))
 
     conn.commit()
     conn.close()
-    return {"message": "Emergency leave sent to Dean"}
+
+    return {"message": "Leave applied"}
 
 # =====================================================
-# STUDENT DASHBOARD
+# PROFESSOR ACTION
 # =====================================================
-@app.get("/student/leaves/{student_id}")
-def student_leaves(student_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    rows = cursor.execute("""
-        SELECT LeaveId, ProfessorStatus, DeanStatus, FinalStatus
-        FROM LeaveApplications WHERE StudentId=?
-    """, student_id).fetchall()
-    conn.close()
-    return [
-        {
-            "leave_id": r[0],
-            "professor_status": r[1],
-            "dean_status": r[2],
-            "final_status": r[3]
-        } for r in rows
-    ]
-
-# =====================================================
-# PROFESSOR DASHBOARD
-# =====================================================
-@app.get("/professor/pending/{professor_id}")
-def professor_pending(professor_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    rows = cursor.execute("""
-        SELECT LeaveId, StudentId, FromDate, ToDate, Reason
-        FROM LeaveApplications
-        WHERE ProfessorId=? AND ProfessorStatus='PENDING'
-    """, professor_id).fetchall()
-    conn.close()
-    return rows
-
 @app.post("/leave/professor-action")
 def professor_action(data: Action):
     conn = get_connection()
@@ -348,29 +268,18 @@ def professor_action(data: Action):
 
     cursor.execute("""
         UPDATE LeaveApplications
-        SET ProfessorStatus=?, FinalStatus=?
-        WHERE LeaveId=?
-    """, status, final, data.leave_id)
+        SET ProfessorStatus=%s, FinalStatus=%s
+        WHERE LeaveId=%s
+    """, (status, final, data.leave_id))
 
     conn.commit()
     conn.close()
-    return {"message": "Professor action completed"}
+
+    return {"message": "Professor action done"}
 
 # =====================================================
-# DEAN DASHBOARD
+# DEAN ACTION
 # =====================================================
-@app.get("/dean/pending")
-def dean_pending():
-    conn = get_connection()
-    cursor = conn.cursor()
-    rows = cursor.execute("""
-        SELECT LeaveId, StudentId, FromDate, ToDate, Reason
-        FROM LeaveApplications
-        WHERE DeanStatus='PENDING'
-    """).fetchall()
-    conn.close()
-    return rows
-
 @app.post("/leave/dean-action")
 def dean_action(data: Action):
     conn = get_connection()
@@ -381,17 +290,18 @@ def dean_action(data: Action):
 
     cursor.execute("""
         UPDATE LeaveApplications
-        SET DeanStatus=?, FinalStatus=?
-        WHERE LeaveId=?
-    """, status, final, data.leave_id)
+        SET DeanStatus=%s, FinalStatus=%s
+        WHERE LeaveId=%s
+    """, (status, final, data.leave_id))
 
     conn.commit()
     conn.close()
-    return {"message": "Dean action completed"}
+
+    return {"message": "Dean action done"}
 
 # =====================================================
 # RUN
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
