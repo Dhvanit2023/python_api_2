@@ -5,7 +5,7 @@ import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 
 # =====================================================
 # CONFIG
@@ -16,12 +16,12 @@ DB_PASSWORD = "34l95acp9v"
 DB_NAME = "kano2026"
 
 # 🔥 PUT YOUR BREVO API KEY HERE
-BREVO_API_KEY = "xsmtpsib-f97e32120e8bb5fa6595718d2a33cd17053f4c9fac4ae626ef0f547f2ad3cd8a-NTTjnQiuYhhKt3Wv"
+BREVO_API_KEY = "xsmtpsib-f97e32120e8bb5fa6595718d2a33cd17053f4c9fac4ae626ef0f547f2ad3cd8a-13A9Z4SHMzWiaIfF"
 
 # =====================================================
-# FASTAPI INIT
+# FASTAPI
 # =====================================================
-app = FastAPI()
+app = FastAPI(title="College ERP Backend")
 
 # =====================================================
 # CORS
@@ -34,12 +34,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =====================================================
-# ROOT
-# =====================================================
 @app.get("/")
 def home():
-    return {"message": "API Running"}
+    return {"message": "API running"}
 
 # =====================================================
 # DB CONNECTION
@@ -69,7 +66,7 @@ def send_otp_email(email, otp):
                 "email": "patelkanostudent@gmail.com"
             },
             "to": [{"email": email}],
-            "subject": "OTP Verification",
+            "subject": "College ERP OTP",
             "htmlContent": f"<h2>Your OTP is {otp}</h2><p>Valid for 5 minutes</p>"
         }
 
@@ -90,12 +87,103 @@ def send_otp_email(email, otp):
 # =====================================================
 # MODELS
 # =====================================================
+class StudentRegister(BaseModel):
+    fullname: str
+    roll_no: int
+    registration_no: str
+    semester: int
+    student_email: str
+    parent_email: str
+
 class SendOTP(BaseModel):
     email: str
 
 class OTPVerify(BaseModel):
     email: str
     otp: str
+
+class LeaveApply(BaseModel):
+    student_id: int
+    from_date: str
+    to_date: str
+    reason: str
+
+class EmergencyLeave(BaseModel):
+    student_id: int
+    from_date: str
+    to_date: str
+    reason: str
+
+class Action(BaseModel):
+    leave_id: int
+    action: str
+
+# =====================================================
+# STUDENT REGISTER
+# =====================================================
+@app.post("/student/register")
+def student_register(data: StudentRegister):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("SELECT 1 FROM Users WHERE Email=%s", (data.student_email,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Email exists")
+
+        cursor.execute("SELECT 1 FROM StudentProfile WHERE RegistrationNo=%s", (data.registration_no,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Student exists")
+
+        cursor.execute("""
+            INSERT INTO Users (FullName, Email, Role)
+            VALUES (%s, %s, 'STUDENT')
+        """, (data.fullname, data.student_email))
+
+        conn.commit()
+
+        cursor.execute("SELECT SCOPE_IDENTITY()")
+        student_id = int(cursor.fetchone()[0])
+
+        cursor.execute("""
+            INSERT INTO StudentProfile
+            (StudentId, RollNo, RegistrationNo, Semester, StudentEmail, ParentEmail)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            student_id,
+            data.roll_no,
+            data.registration_no,
+            data.semester,
+            data.student_email,
+            data.parent_email
+        ))
+
+        cursor.execute("""
+            SELECT TOP 1 p.ProfessorId
+            FROM ProfessorProfile p
+            LEFT JOIN StudentProfessorMapping sp
+            ON sp.ProfessorId = p.ProfessorId AND sp.Semester=%s
+            GROUP BY p.ProfessorId
+            HAVING COUNT(sp.StudentId) < 7
+            ORDER BY COUNT(sp.StudentId)
+        """, (data.semester,))
+
+        prof = cursor.fetchone()
+
+        if not prof:
+            raise HTTPException(status_code=400, detail="No professor")
+
+        cursor.execute("""
+            INSERT INTO StudentProfessorMapping (StudentId, ProfessorId, Semester)
+            VALUES (%s, %s, %s)
+        """, (student_id, prof[0], data.semester))
+
+        conn.commit()
+
+        return {"message": "Student registered", "professor_id": prof[0]}
+
+    finally:
+        conn.close()
 
 # =====================================================
 # SEND OTP
@@ -125,17 +213,13 @@ def send_otp(data: SendOTP):
     finally:
         conn.close()
 
-    # 🔥 Send email (no crash)
+    # Send email safely
     try:
         send_otp_email(data.email, otp)
-    except Exception as e:
-        print("Email failed:", e)
+    except:
+        print("Email failed")
 
-    # 🔥 Also return OTP for testing
-    return {
-        "message": "OTP sent",
-        "otp": otp
-    }
+    return {"message": "OTP sent", "otp": otp}
 
 # =====================================================
 # VERIFY OTP
