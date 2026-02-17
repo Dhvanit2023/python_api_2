@@ -15,16 +15,16 @@ DB_USER = "Dhvanit_SQLLogin_1"
 DB_PASSWORD = "34l95acp9v"
 DB_NAME = "kano2026"
 
-# 🔥 Put your Brevo API key here
+# 🔥 PUT YOUR BREVO API KEY HERE
 BREVO_API_KEY = "xsmtpsib-f97e32120e8bb5fa6595718d2a33cd17053f4c9fac4ae626ef0f547f2ad3cd8a-NTTjnQiuYhhKt3Wv"
 
 # =====================================================
 # FASTAPI INIT
 # =====================================================
-app = FastAPI(title="College ERP Backend")
+app = FastAPI()
 
 # =====================================================
-# CORS (Flutter / Android)
+# CORS
 # =====================================================
 app.add_middleware(
     CORSMiddleware,
@@ -35,31 +35,23 @@ app.add_middleware(
 )
 
 # =====================================================
-# ROOT ROUTE
+# ROOT
 # =====================================================
 @app.get("/")
 def home():
-    return {"message": "API is running 🚀"}
-
-@app.get("/favicon.ico")
-def favicon():
-    return {}
+    return {"message": "API Running"}
 
 # =====================================================
 # DB CONNECTION
 # =====================================================
 def get_connection():
-    try:
-        return pymssql.connect(
-            server=DB_SERVER,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME,
-            timeout=30
-        )
-    except Exception as e:
-        print("DB ERROR:", e)
-        raise HTTPException(status_code=500, detail="Database connection failed")
+    return pymssql.connect(
+        server=DB_SERVER,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+        timeout=30
+    )
 
 # =====================================================
 # UTILS
@@ -78,10 +70,7 @@ def send_otp_email(email, otp):
             },
             "to": [{"email": email}],
             "subject": "OTP Verification",
-            "htmlContent": f"""
-                <h2>Your OTP is {otp}</h2>
-                <p>Valid for 5 minutes</p>
-            """
+            "htmlContent": f"<h2>Your OTP is {otp}</h2><p>Valid for 5 minutes</p>"
         }
 
         headers = {
@@ -91,114 +80,22 @@ def send_otp_email(email, otp):
         }
 
         res = requests.post(url, json=payload, headers=headers)
-        print("Email Response:", res.text)
+
+        print("EMAIL STATUS:", res.status_code)
+        print("EMAIL RESPONSE:", res.text)
 
     except Exception as e:
-        print("Email API Error:", e)
+        print("EMAIL ERROR:", e)
 
 # =====================================================
 # MODELS
 # =====================================================
-class StudentRegister(BaseModel):
-    fullname: str
-    roll_no: int
-    registration_no: str
-    semester: int
-    student_email: str
-    parent_email: str
-
 class SendOTP(BaseModel):
     email: str
 
 class OTPVerify(BaseModel):
     email: str
     otp: str
-
-class LeaveApply(BaseModel):
-    student_id: int
-    from_date: date
-    to_date: date
-    reason: str
-
-class Action(BaseModel):
-    leave_id: int
-    action: str
-
-# =====================================================
-# STUDENT REGISTER
-# =====================================================
-@app.post("/student/register")
-def student_register(data: StudentRegister):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    try:
-        # Validate semester (fix DB constraint error)
-        if data.semester < 1 or data.semester > 8:
-            raise HTTPException(status_code=400, detail="Invalid semester")
-
-        # Check email
-        cursor.execute("SELECT 1 FROM Users WHERE Email=%s", (data.student_email,))
-        if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Email already exists")
-
-        # Check registration
-        cursor.execute("SELECT 1 FROM StudentProfile WHERE RegistrationNo=%s", (data.registration_no,))
-        if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Student already exists")
-
-        # Insert user
-        cursor.execute("""
-            INSERT INTO Users (FullName, Email, Role)
-            VALUES (%s, %s, 'STUDENT')
-        """, (data.fullname, data.student_email))
-        conn.commit()
-
-        # Get ID
-        cursor.execute("SELECT SCOPE_IDENTITY()")
-        student_id = int(cursor.fetchone()[0])
-
-        # Insert profile
-        cursor.execute("""
-            INSERT INTO StudentProfile
-            (StudentId, RollNo, RegistrationNo, Semester, StudentEmail, ParentEmail)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (
-            student_id,
-            data.roll_no,
-            data.registration_no,
-            data.semester,
-            data.student_email,
-            data.parent_email
-        ))
-
-        # Assign professor
-        cursor.execute("""
-            SELECT TOP 1 p.ProfessorId
-            FROM ProfessorProfile p
-            LEFT JOIN StudentProfessorMapping sp
-            ON sp.ProfessorId = p.ProfessorId AND sp.Semester=%s
-            GROUP BY p.ProfessorId
-            HAVING COUNT(sp.StudentId) < 7
-            ORDER BY COUNT(sp.StudentId)
-        """, (data.semester,))
-
-        prof = cursor.fetchone()
-
-        if not prof:
-            raise HTTPException(status_code=400, detail="No professor available")
-
-        cursor.execute("""
-            INSERT INTO StudentProfessorMapping (StudentId, ProfessorId, Semester)
-            VALUES (%s, %s, %s)
-        """, (student_id, prof[0], data.semester))
-
-        conn.commit()
-
-        return {"message": "Student registered", "professor_id": prof[0]}
-
-    finally:
-        conn.close()
 
 # =====================================================
 # SEND OTP
@@ -228,10 +125,13 @@ def send_otp(data: SendOTP):
     finally:
         conn.close()
 
-    # Send Email (Brevo)
-    send_otp_email(data.email, otp)
+    # 🔥 Send email (no crash)
+    try:
+        send_otp_email(data.email, otp)
+    except Exception as e:
+        print("Email failed:", e)
 
-    # For testing (remove later)
+    # 🔥 Also return OTP for testing
     return {
         "message": "OTP sent",
         "otp": otp
@@ -254,7 +154,7 @@ def verify_otp(data: OTPVerify):
         otp_row = cursor.fetchone()
 
         if not otp_row:
-            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+            raise HTTPException(status_code=400, detail="Invalid OTP")
 
         cursor.execute("UPDATE EmailOTP SET IsUsed=1 WHERE OTPId=%s", (otp_row[0],))
 
@@ -274,91 +174,6 @@ def verify_otp(data: OTPVerify):
             "user_id": user[0],
             "role": user[1]
         }
-
-    finally:
-        conn.close()
-
-# =====================================================
-# APPLY LEAVE
-# =====================================================
-@app.post("/leave/apply")
-def apply_leave(data: LeaveApply):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    try:
-        cursor.execute("SELECT ProfessorId FROM StudentProfessorMapping WHERE StudentId=%s", (data.student_id,))
-        prof = cursor.fetchone()
-
-        cursor.execute("SELECT TOP 1 DeanId FROM DeanProfile")
-        dean = cursor.fetchone()
-
-        if not prof or not dean:
-            raise HTTPException(status_code=400, detail="Configuration error")
-
-        cursor.execute("""
-            INSERT INTO LeaveApplications
-            (StudentId, ProfessorId, DeanId, FromDate, ToDate, Reason)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (
-            data.student_id,
-            prof[0],
-            dean[0],
-            data.from_date,
-            data.to_date,
-            data.reason
-        ))
-
-        conn.commit()
-        return {"message": "Leave applied"}
-
-    finally:
-        conn.close()
-
-# =====================================================
-# PROFESSOR ACTION
-# =====================================================
-@app.post("/leave/professor-action")
-def professor_action(data: Action):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    try:
-        status = "APPROVED" if data.action == "APPROVED" else "REJECTED"
-        final = "FORWARDED_TO_DEAN" if status == "APPROVED" else "REJECTED_BY_PROFESSOR"
-
-        cursor.execute("""
-            UPDATE LeaveApplications
-            SET ProfessorStatus=%s, FinalStatus=%s
-            WHERE LeaveId=%s
-        """, (status, final, data.leave_id))
-
-        conn.commit()
-        return {"message": "Professor updated"}
-
-    finally:
-        conn.close()
-
-# =====================================================
-# DEAN ACTION
-# =====================================================
-@app.post("/leave/dean-action")
-def dean_action(data: Action):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    try:
-        status = "APPROVED" if data.action == "APPROVED" else "REJECTED"
-        final = "FINAL_APPROVED" if status == "APPROVED" else "REJECTED_BY_DEAN"
-
-        cursor.execute("""
-            UPDATE LeaveApplications
-            SET DeanStatus=%s, FinalStatus=%s
-            WHERE LeaveId=%s
-        """, (status, final, data.leave_id))
-
-        conn.commit()
-        return {"message": "Dean updated"}
 
     finally:
         conn.close()
