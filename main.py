@@ -1,12 +1,11 @@
 import pymssql
-import smtplib
 import random
 import uuid
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime, timedelta, date
-from email.message import EmailMessage
 
 # =====================================================
 # CONFIG
@@ -16,8 +15,8 @@ DB_USER = "Dhvanit_SQLLogin_1"
 DB_PASSWORD = "34l95acp9v"
 DB_NAME = "kano2026"
 
-EMAIL_FROM = "patelkanostudent@gmail.com"
-EMAIL_PASS = "xrvx welj nagp bsbz"
+# 🔥 Put your Brevo API key here
+BREVO_API_KEY = "xsmtpsib-f97e32120e8bb5fa6595718d2a33cd17053f4c9fac4ae626ef0f547f2ad3cd8a-NTTjnQiuYhhKt3Wv"
 
 # =====================================================
 # FASTAPI INIT
@@ -25,7 +24,7 @@ EMAIL_PASS = "xrvx welj nagp bsbz"
 app = FastAPI(title="College ERP Backend")
 
 # =====================================================
-# CORS (IMPORTANT FOR FLUTTER)
+# CORS (Flutter / Android)
 # =====================================================
 app.add_middleware(
     CORSMiddleware,
@@ -36,7 +35,7 @@ app.add_middleware(
 )
 
 # =====================================================
-# ROOT ROUTE (FIX 404)
+# ROOT ROUTE
 # =====================================================
 @app.get("/")
 def home():
@@ -70,21 +69,32 @@ def generate_otp():
 
 def send_otp_email(email, otp):
     try:
-        msg = EmailMessage()
-        msg["Subject"] = "College ERP Login OTP"
-        msg["From"] = EMAIL_FROM
-        msg["To"] = email
-        msg.set_content(f"Your OTP is {otp}. Valid for 5 minutes.")
+        url = "https://api.brevo.com/v3/smtp/email"
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(EMAIL_FROM, EMAIL_PASS)
-            server.send_message(msg)
+        payload = {
+            "sender": {
+                "name": "College ERP",
+                "email": "patelkanostudent@gmail.com"
+            },
+            "to": [{"email": email}],
+            "subject": "OTP Verification",
+            "htmlContent": f"""
+                <h2>Your OTP is {otp}</h2>
+                <p>Valid for 5 minutes</p>
+            """
+        }
 
-        print("OTP Sent Successfully")
+        headers = {
+            "accept": "application/json",
+            "api-key": BREVO_API_KEY,
+            "content-type": "application/json"
+        }
+
+        res = requests.post(url, json=payload, headers=headers)
+        print("Email Response:", res.text)
 
     except Exception as e:
-        print("Email Error:", e)
-        raise HTTPException(status_code=500, detail="Email failed")
+        print("Email API Error:", e)
 
 # =====================================================
 # MODELS
@@ -123,12 +133,16 @@ def student_register(data: StudentRegister):
     cursor = conn.cursor()
 
     try:
-        # Email check
+        # Validate semester (fix DB constraint error)
+        if data.semester < 1 or data.semester > 8:
+            raise HTTPException(status_code=400, detail="Invalid semester")
+
+        # Check email
         cursor.execute("SELECT 1 FROM Users WHERE Email=%s", (data.student_email,))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Email already exists")
 
-        # Registration check
+        # Check registration
         cursor.execute("SELECT 1 FROM StudentProfile WHERE RegistrationNo=%s", (data.registration_no,))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Student already exists")
@@ -180,6 +194,7 @@ def student_register(data: StudentRegister):
         """, (student_id, prof[0], data.semester))
 
         conn.commit()
+
         return {"message": "Student registered", "professor_id": prof[0]}
 
     finally:
@@ -213,9 +228,14 @@ def send_otp(data: SendOTP):
     finally:
         conn.close()
 
+    # Send Email (Brevo)
     send_otp_email(data.email, otp)
 
-    return {"message": "OTP sent"}
+    # For testing (remove later)
+    return {
+        "message": "OTP sent",
+        "otp": otp
+    }
 
 # =====================================================
 # VERIFY OTP
