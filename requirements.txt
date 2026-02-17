@@ -5,3 +5,4 @@ pydantic
 firebase-admin
 python-dotenv
 email-validator
+requests
