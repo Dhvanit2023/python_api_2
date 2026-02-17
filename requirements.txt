@@ -1,8 +1,4 @@
 fastapi
 uvicorn
 pymssql
-pydantic
-firebase-admin
-python-dotenv
-email-validator
 requests
