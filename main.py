@@ -2,22 +2,21 @@ import pymssql
 import smtplib
 import random
 import uuid
-import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from datetime import datetime, timedelta, date
 from email.message import EmailMessage
 
 # =====================================================
-# CONFIG (Use ENV VARIABLES in Render)
+# CONFIG (DIRECT VALUES)
 # =====================================================
-DB_SERVER = os.getenv("DB_SERVER", "kano2026.mssql.somee.com")
-DB_USER = os.getenv("DB_USER", "Dhvanit_SQLLogin_1")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "34l95acp9v")
-DB_NAME = os.getenv("DB_NAME", "kano2026")
+DB_SERVER = "kano2026.mssql.somee.com"
+DB_USER = "Dhvanit_SQLLogin_1"
+DB_PASSWORD = "34l95acp9v"
+DB_NAME = "kano2026"
 
-EMAIL_FROM = os.getenv("EMAIL_FROM", "patelkanostudent@gmail.com")
-EMAIL_PASS = os.getenv("EMAIL_PASS", "xrvx welj nagp bsbz")
+EMAIL_FROM = "patelkanostudent@gmail.com"
+EMAIL_PASS = "xrvx welj nagp bsbz"
 
 # =====================================================
 # DB CONNECTION
@@ -33,7 +32,7 @@ def get_connection():
         )
         return conn
     except Exception as e:
-        print("DB Connection Error:", e)
+        print("DB ERROR:", e)
         raise HTTPException(status_code=500, detail="Database connection failed")
 
 # =====================================================
@@ -54,11 +53,11 @@ def send_otp_email(email, otp):
             server.login(EMAIL_FROM, EMAIL_PASS)
             server.send_message(msg)
 
-        print("OTP sent successfully")
+        print("OTP sent")
 
     except Exception as e:
         print("Email Error:", e)
-        raise HTTPException(status_code=500, detail="Email sending failed")
+        raise HTTPException(status_code=500, detail="Email failed")
 
 # =====================================================
 # FASTAPI
@@ -97,7 +96,7 @@ class EmergencyLeave(BaseModel):
 
 class Action(BaseModel):
     leave_id: int
-    action: str   # APPROVED / REJECTED
+    action: str
 
 # =====================================================
 # STUDENT REGISTER
@@ -107,19 +106,16 @@ def student_register(data: StudentRegister):
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Email check
     cursor.execute("SELECT 1 FROM Users WHERE Email=%s", (data.student_email,))
     if cursor.fetchone():
         conn.close()
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=400, detail="Email exists")
 
-    # Registration check
     cursor.execute("SELECT 1 FROM StudentProfile WHERE RegistrationNo=%s", (data.registration_no,))
     if cursor.fetchone():
         conn.close()
-        raise HTTPException(status_code=400, detail="Student already exists")
+        raise HTTPException(status_code=400, detail="Student exists")
 
-    # Insert user
     cursor.execute("""
         INSERT INTO Users (FullName, Email, Role)
         VALUES (%s, %s, 'STUDENT')
@@ -127,11 +123,9 @@ def student_register(data: StudentRegister):
 
     conn.commit()
 
-    # Get ID
     cursor.execute("SELECT SCOPE_IDENTITY()")
     student_id = cursor.fetchone()[0]
 
-    # Insert profile
     cursor.execute("""
         INSERT INTO StudentProfile
         (StudentId, RollNo, RegistrationNo, Semester, StudentEmail, ParentEmail)
@@ -145,7 +139,6 @@ def student_register(data: StudentRegister):
         data.parent_email
     ))
 
-    # Assign professor
     cursor.execute("""
         SELECT TOP 1 p.ProfessorId
         FROM ProfessorProfile p
@@ -160,7 +153,7 @@ def student_register(data: StudentRegister):
 
     if not prof:
         conn.close()
-        raise HTTPException(status_code=400, detail="No professor available")
+        raise HTTPException(status_code=400, detail="No professor")
 
     cursor.execute("""
         INSERT INTO StudentProfessorMapping (StudentId, ProfessorId, Semester)
@@ -170,7 +163,7 @@ def student_register(data: StudentRegister):
     conn.commit()
     conn.close()
 
-    return {"message": "Student registered", "professor_id": prof[0]}
+    return {"message": "Registered", "professor": prof[0]}
 
 # =====================================================
 # SEND OTP
@@ -180,7 +173,7 @@ def send_otp(data: SendOTP):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT UserId FROM Users WHERE Email=%s AND IsActive=1", (data.email,))
+    cursor.execute("SELECT UserId FROM Users WHERE Email=%s", (data.email,))
     user = cursor.fetchone()
 
     if not user:
@@ -199,6 +192,7 @@ def send_otp(data: SendOTP):
     conn.close()
 
     send_otp_email(data.email, otp)
+
     return {"message": "OTP sent"}
 
 # =====================================================
@@ -218,7 +212,7 @@ def verify_otp(data: OTPVerify):
 
     if not otp_row:
         conn.close()
-        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+        raise HTTPException(status_code=400, detail="Invalid OTP")
 
     cursor.execute("UPDATE EmailOTP SET IsUsed=1 WHERE OTPId=%s", (otp_row[0],))
 
@@ -233,12 +227,7 @@ def verify_otp(data: OTPVerify):
     conn.commit()
     conn.close()
 
-    return {
-        "login": "success",
-        "token": token,
-        "user_id": user[0],
-        "role": user[1]
-    }
+    return {"token": token, "user_id": user[0], "role": user[1]}
 
 # =====================================================
 # APPLY LEAVE
@@ -256,7 +245,7 @@ def apply_leave(data: LeaveApply):
 
     if not prof or not dean:
         conn.close()
-        raise HTTPException(status_code=400, detail="Configuration error")
+        raise HTTPException(status_code=400, detail="Config error")
 
     cursor.execute("""
         INSERT INTO LeaveApplications
@@ -273,6 +262,7 @@ def apply_leave(data: LeaveApply):
 
     conn.commit()
     conn.close()
+
     return {"message": "Leave applied"}
 
 # =====================================================
@@ -294,7 +284,8 @@ def professor_action(data: Action):
 
     conn.commit()
     conn.close()
-    return {"message": "Professor updated"}
+
+    return {"message": "Updated"}
 
 # =====================================================
 # DEAN ACTION
@@ -315,4 +306,5 @@ def dean_action(data: Action):
 
     conn.commit()
     conn.close()
-    return {"message": "Dean updated"}
+
+    return {"message": "Done"}
