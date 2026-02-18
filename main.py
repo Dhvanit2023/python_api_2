@@ -15,7 +15,7 @@ DB_USER = "Dhvanit_SQLLogin_1"
 DB_PASSWORD = "34l95acp9v"
 DB_NAME = "kano2026"
 
-BREVO_API_KEY = "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"
+BREVO_API_KEY = "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"
 
 # =====================================================
 # FASTAPI
