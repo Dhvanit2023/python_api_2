@@ -2,21 +2,20 @@ import pymssql
 import random
 import uuid
 import requests
-import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 
 # =====================================================
-# CONFIG (ENV VARIABLES)
+# CONFIG (DIRECT VALUES)
 # =====================================================
-DB_SERVER = os.getenv("DB_SERVER")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
+DB_SERVER = "kano2026.mssql.somee.com"
+DB_USER = "Dhvanit_SQLLogin_1"
+DB_PASSWORD = "34l95acp9v"
+DB_NAME = "kano2026"
 
-BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+BREVO_API_KEY = "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"
 
 # =====================================================
 # FASTAPI
@@ -24,7 +23,7 @@ BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 app = FastAPI(title="College ERP Backend")
 
 # =====================================================
-# CORS (FOR ANDROID)
+# CORS (ANDROID SUPPORT)
 # =====================================================
 app.add_middleware(
     CORSMiddleware,
@@ -86,7 +85,7 @@ def send_otp_email(email, otp):
         print("EMAIL RESPONSE:", res.text)
 
         if res.status_code != 201:
-            raise Exception("Email not sent")
+            raise Exception("Email sending failed")
 
     except Exception as e:
         print("EMAIL ERROR:", e)
@@ -136,8 +135,8 @@ def send_otp(data: SendOTP):
     # Send email (safe)
     try:
         send_otp_email(data.email, otp)
-    except Exception as e:
-        print("Email failed:", e)
+    except:
+        print("Email failed")
 
     return {"message": "OTP sent"}
 
