@@ -9,14 +9,17 @@ from datetime import datetime, timedelta
 from fastapi.middleware.cors import CORSMiddleware
 
 # =====================================================
-# CONFIG
+# ENV VARIABLES (SET IN RENDER)
+# =====================================================
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+
+# =====================================================
+# DB CONFIG
 # =====================================================
 DB_SERVER = "kano2026.mssql.somee.com"
 DB_USER = "Dhvanit_SQLLogin_1"
-DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = "kano2026"
-
-BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 
 EMAIL_FROM = "patelkanostudent@gmail.com"
 
@@ -26,7 +29,7 @@ EMAIL_FROM = "patelkanostudent@gmail.com"
 app = FastAPI(title="College ERP Backend")
 
 # =====================================================
-# CORS
+# CORS (ANDROID SUPPORT)
 # =====================================================
 app.add_middleware(
     CORSMiddleware,
@@ -62,6 +65,11 @@ def get_connection():
 def generate_otp():
     return str(random.randint(100000, 999999))
 
+def validate_fields(data_dict):
+    for key, value in data_dict.items():
+        if value is None or str(value).strip() == "":
+            raise HTTPException(status_code=400, detail=f"{key} is required")
+
 # =====================================================
 # BREVO EMAIL
 # =====================================================
@@ -70,10 +78,7 @@ def send_otp_email(email, otp):
         url = "https://api.brevo.com/v3/smtp/email"
 
         payload = {
-            "sender": {
-                "name": "College ERP",
-                "email": EMAIL_FROM
-            },
+            "sender": {"name": "College ERP", "email": EMAIL_FROM},
             "to": [{"email": email}],
             "subject": "College ERP Login OTP",
             "htmlContent": f"<h2>Your OTP is {otp}</h2><p>Valid for 5 minutes</p>"
@@ -89,9 +94,6 @@ def send_otp_email(email, otp):
 
         print("EMAIL STATUS:", res.status_code)
         print("EMAIL RESPONSE:", res.text)
-
-        if res.status_code != 201:
-            raise Exception("Email sending failed")
 
     except Exception as e:
         print("Email Error:", e)
@@ -135,6 +137,8 @@ class Action(BaseModel):
 # =====================================================
 @app.post("/student/register")
 def student_register(data: StudentRegister):
+    validate_fields(data.dict())
+
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -190,25 +194,36 @@ def student_register(data: StudentRegister):
         """, (student_id, prof[0], data.semester))
 
         conn.commit()
+
         return {"message": "Student registered successfully", "assigned_professor": prof[0]}
 
     finally:
         conn.close()
 
 # =====================================================
-# SEND OTP
+# SEND OTP (ANTI SPAM)
 # =====================================================
 @app.post("/auth/send-otp")
 def send_otp(data: SendOTP):
+    if not data.email:
+        raise HTTPException(status_code=400, detail="Email required")
+
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
         cursor.execute("SELECT UserId FROM Users WHERE Email=%s AND IsActive=1", (data.email,))
-        user = cursor.fetchone()
-
-        if not user:
+        if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="User not found")
+
+        # check existing OTP
+        cursor.execute("""
+            SELECT OTPCode FROM EmailOTP
+            WHERE Email=%s AND IsUsed=0 AND ExpiryTime >= GETDATE()
+        """, (data.email,))
+
+        if cursor.fetchone():
+            return {"message": "OTP already sent"}
 
         otp = generate_otp()
         expiry = datetime.now() + timedelta(minutes=5)
@@ -224,6 +239,7 @@ def send_otp(data: SendOTP):
         conn.close()
 
     send_otp_email(data.email, otp)
+
     return {"message": "OTP sent"}
 
 # =====================================================
@@ -272,6 +288,8 @@ def verify_otp(data: OTPVerify):
 # =====================================================
 @app.post("/leave/apply")
 def apply_leave(data: LeaveApply):
+    validate_fields(data.dict())
+
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -299,99 +317,92 @@ def apply_leave(data: LeaveApply):
         ))
 
         conn.commit()
+
         return {"message": "Leave applied"}
 
     finally:
         conn.close()
 
 # =====================================================
-# STUDENT LEAVE STATUS
+# EMERGENCY LEAVE
+# =====================================================
+@app.post("/leave/emergency")
+def emergency_leave(data: EmergencyLeave):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("SELECT ProfessorId FROM StudentProfessorMapping WHERE StudentId=%s", (data.student_id,))
+        prof = cursor.fetchone()
+
+        cursor.execute("SELECT TOP 1 DeanId FROM DeanProfile")
+        dean = cursor.fetchone()
+
+        if not prof or not dean:
+            raise HTTPException(status_code=400, detail="Configuration error")
+
+        cursor.execute("""
+            INSERT INTO LeaveApplications
+            (StudentId, ProfessorId, DeanId, ProfessorStatus, FromDate, ToDate, Reason)
+            VALUES (%s, %s, %s, 'SKIPPED', %s, %s, %s)
+        """, (
+            data.student_id,
+            prof[0],
+            dean[0],
+            data.from_date,
+            data.to_date,
+            data.reason
+        ))
+
+        conn.commit()
+
+        return {"message": "Emergency leave sent"}
+
+    finally:
+        conn.close()
+
+# =====================================================
+# STUDENT DASHBOARD
 # =====================================================
 @app.get("/student/leaves/{student_id}")
 def student_leaves(student_id: int):
     conn = get_connection()
     cursor = conn.cursor()
 
-    try:
-        cursor.execute("""
-            SELECT LeaveId, ProfessorStatus, DeanStatus, FinalStatus
-            FROM LeaveApplications
-            WHERE StudentId=%s
-        """, (student_id,))
+    rows = cursor.execute("""
+        SELECT LeaveId, ProfessorStatus, DeanStatus, FinalStatus
+        FROM LeaveApplications WHERE StudentId=%s
+    """, (student_id,)).fetchall()
 
-        rows = cursor.fetchall()
+    conn.close()
 
-        return [
-            {
-                "leave_id": r[0],
-                "professor_status": r[1],
-                "dean_status": r[2],
-                "final_status": r[3]
-            } for r in rows
-        ]
-
-    finally:
-        conn.close()
+    return [
+        {
+            "leave_id": r[0],
+            "professor_status": r[1],
+            "dean_status": r[2],
+            "final_status": r[3]
+        } for r in rows
+    ]
 
 # =====================================================
-# DEAN ACTION
+# PROFESSOR
 # =====================================================
-@app.post("/leave/dean-action")
-def dean_action(data: Action):
+@app.get("/professor/pending/{professor_id}")
+def professor_pending(professor_id: int):
     conn = get_connection()
     cursor = conn.cursor()
 
-    try:
-        status = "APPROVED" if data.action == "APPROVED" else "REJECTED"
+    rows = cursor.execute("""
+        SELECT LeaveId, StudentId, FromDate, ToDate, Reason
+        FROM LeaveApplications
+        WHERE ProfessorId=%s AND ProfessorStatus='PENDING'
+    """, (professor_id,)).fetchall()
 
-        final = "FINAL_APPROVED" if status == "APPROVED" else "REJECTED_BY_DEAN"
+    conn.close()
 
-        cursor.execute("""
-            UPDATE LeaveApplications
-            SET DeanStatus=%s, FinalStatus=%s
-            WHERE LeaveId=%s
-        """, (status, final, data.leave_id))
+    return rows
 
-        conn.commit()
-
-        return {"message": "Dean action done"}
-
-    finally:
-        conn.close()
-
-# =====================================================
-# DEAN PENDING LEAVES
-# =====================================================
-@app.get("/dean/pending")
-def dean_pending():
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    try:
-        cursor.execute("""
-            SELECT LeaveId, StudentId, FromDate, ToDate, Reason
-            FROM LeaveApplications
-            WHERE FinalStatus='FORWARDED_TO_DEAN'
-        """)
-
-        rows = cursor.fetchall()
-
-        return [
-            {
-                "leave_id": r[0],
-                "student_id": r[1],
-                "from_date": str(r[2]),
-                "to_date": str(r[3]),
-                "reason": r[4]
-            } for r in rows
-        ]
-
-    finally:
-        conn.close()
-
-# =====================================================
-# PROFESSOR ACTION
-# =====================================================
 @app.post("/leave/professor-action")
 def professor_action(data: Action):
     conn = get_connection()
@@ -399,7 +410,6 @@ def professor_action(data: Action):
 
     try:
         status = "APPROVED" if data.action == "APPROVED" else "REJECTED"
-
         final = "FORWARDED_TO_DEAN" if status == "APPROVED" else "REJECTED_BY_PROFESSOR"
 
         cursor.execute("""
@@ -416,31 +426,41 @@ def professor_action(data: Action):
         conn.close()
 
 # =====================================================
-# PROFESSOR PENDING LEAVES
+# DEAN
 # =====================================================
-@app.get("/professor/pending/{professor_id}")
-def professor_pending(professor_id: int):
+@app.get("/dean/pending")
+def dean_pending():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    rows = cursor.execute("""
+        SELECT LeaveId, StudentId, FromDate, ToDate, Reason
+        FROM LeaveApplications
+        WHERE DeanStatus='PENDING'
+    """).fetchall()
+
+    conn.close()
+
+    return rows
+
+@app.post("/leave/dean-action")
+def dean_action(data: Action):
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
+        status = "APPROVED" if data.action == "APPROVED" else "REJECTED"
+        final = "FINAL_APPROVED" if status == "APPROVED" else "REJECTED_BY_DEAN"
+
         cursor.execute("""
-            SELECT LeaveId, StudentId, FromDate, ToDate, Reason
-            FROM LeaveApplications
-            WHERE ProfessorId=%s AND ProfessorStatus='PENDING'
-        """, (professor_id,))
+            UPDATE LeaveApplications
+            SET DeanStatus=%s, FinalStatus=%s
+            WHERE LeaveId=%s
+        """, (status, final, data.leave_id))
 
-        rows = cursor.fetchall()
+        conn.commit()
 
-        return [
-            {
-                "leave_id": r[0],
-                "student_id": r[1],
-                "from_date": str(r[2]),
-                "to_date": str(r[3]),
-                "reason": r[4]
-            } for r in rows
-        ]
+        return {"message": "Dean action done"}
 
     finally:
         conn.close()
