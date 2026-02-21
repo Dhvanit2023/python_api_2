@@ -8,9 +8,6 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 from fastapi.middleware.cors import CORSMiddleware
 
-# =====================================================
-# ENV VARIABLES (SET IN RENDER)
-# =====================================================
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 
