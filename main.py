@@ -114,8 +114,8 @@ def student_register(data: StudentRegister):
                    data.fullname, data.student_email)
     
 
-    cursor.execute("SELECT SCOPE_IDENTITY()")
-student_id = cursor.fetchone()[0]
+    cursor.execute("SELECT SCOPE_IDENTITY()") 
+    student_id = cursor.fetchone()[0]
     nms=nms+1
     cursor.execute("""
         INSERT INTO StudentProfile
