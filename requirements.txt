@@ -1,4 +1,5 @@
 fastapi
-uvicorn
-pymssql
-requests
+uvicorn[standard]
+pyodbc
+pydantic
+gunicorn
