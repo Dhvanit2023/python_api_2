@@ -7,14 +7,14 @@ from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Optional
-
+import os
 
 # =====================================================
 # CONFIG
 # =====================================================
 
 # --- Brevo Email Config ---
-BREVO_API_KEY = KEY
+BREVO_API_KEY = os.getenv("KEY")
 BREVO_SENDER_EMAIL = "patelkanostudent@gmail.com"
 BREVO_SENDER_NAME = "College ERP System"
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
