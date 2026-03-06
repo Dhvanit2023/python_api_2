@@ -1,4 +1,4 @@
-import pyodbc
+import pymssql
 import smtplib
 import random
 import uuid
@@ -11,15 +11,7 @@ from datetime import datetime
 # =====================================================
 # CONFIG
 # =====================================================
-DB_CONN_STR = (
-    "DRIVER={ODBC Driver 18 for SQL Server};"
-    "SERVER=kano2026.mssql.somee.com;"
-    "DATABASE=kano2026;"
-    "UID=Dhvanit_SQLLogin_1;"
-    "PWD=34l95acp9v;"
-    "Encrypt=yes;"
-    "TrustServerCertificate=yes;"
-)
+
 
 EMAIL_FROM = "patelkanostudent@gmail.com"
 EMAIL_APP_PASSWORD = "xrvx welj nagp bsbz"
@@ -33,7 +25,12 @@ app = FastAPI(title="College ERP Backend")
 # UTILS
 # =====================================================
 def get_connection():
-    return pyodbc.connect(DB_CONN_STR)
+    return pymssql.connect(
+        server="kano2026.mssql.somee.com",
+        user="Dhvanit_SQLLogin_1",
+        password="34l95acp9v",
+        database="kano2026"
+    )
 
 def generate_otp():
     return str(random.randint(100000, 999999))
