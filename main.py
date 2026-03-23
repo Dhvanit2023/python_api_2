@@ -30,7 +30,7 @@ BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 # --- Database Config ---
 DB_SERVER = "kano2026.mssql.somee.com"
 DB_USER = "Dhvanit_SQLLogin_1"
-DB_PASSWORD = "PASS"
+DB_PASSWORD = os.getenv("PASS")
 DB_NAME = "kano2026"
 
 # =====================================================
