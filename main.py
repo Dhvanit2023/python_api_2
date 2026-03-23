@@ -8,7 +8,14 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Optional
 import os
+import firebase_admin
+from firebase_admin import credentials, messaging
 
+
+cred = credentials.Certificate("leavemapp-firebase-adminsdk-fbsvc-970db50f6b.json")
+
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
 # =====================================================
 # CONFIG
 # =====================================================
@@ -146,14 +153,12 @@ def send_parent_email(
 # PYDANTIC MODELS
 # =====================================================
 class StudentRegister(BaseModel):
-    nms: int
     fullname: str
     roll_no: int
     registration_no: str
     semester: int
     student_email: str
     parent_email: str
-
 
 class SendOTP(BaseModel):
     email: str
@@ -325,18 +330,18 @@ def student_register(data: StudentRegister):
 
         # Find available professor
         cursor.execute(
-            """
-            SELECT p.ProfessorId
-            FROM ProfessorProfile p
-            LEFT JOIN StudentProfessorMapping sp
-                ON sp.ProfessorId = p.ProfessorId
-                AND sp.Semester = %s
-            GROUP BY p.ProfessorId
-            HAVING COUNT(sp.StudentId) < 7
-            ORDER BY COUNT(sp.StudentId)
-            """,
-            (data.semester,)
-        )
+    """
+    SELECT p.ProfessorId
+    FROM ProfessorProfile p
+    LEFT JOIN StudentProfessorMapping sp
+        ON p.ProfessorId = sp.ProfessorId
+        AND sp.Semester = %s
+    GROUP BY p.ProfessorId
+    HAVING COUNT(sp.StudentId) < 7
+    ORDER BY COUNT(sp.StudentId) ASC
+    """,
+    (data.semester,)
+)
         prof = cursor.fetchone()
 
         if not prof:
@@ -511,14 +516,18 @@ def verify_otp(data: OTPVerify):
 # APPLY LEAVE
 # =====================================================
 @app.post("/leave/apply")
-def apply_leave(data: LeaveApply):
+def apply_leave(
+    data: LeaveApply,
+    authorization: str = Header(None)
+):
+    
+    data.student_id = get_user_from_token(authorization)
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT ProfessorId FROM StudentProfessorMapping "
-            "WHERE StudentId=%s",
+            "SELECT ProfessorId FROM StudentProfessorMapping WHERE StudentId=%s",
             (data.student_id,)
         )
         prof = cursor.fetchone()
@@ -527,18 +536,16 @@ def apply_leave(data: LeaveApply):
         dean = cursor.fetchone()
 
         if not prof or not dean:
-            raise HTTPException(
-                status_code=400,
-                detail="Configuration error"
-            )
+            raise HTTPException(status_code=400, detail="Config error")
 
+        # INSERT
         cursor.execute(
             """
             INSERT INTO LeaveApplications
             (StudentId, ProfessorId, DeanId,
              ProfessorStatus, DeanStatus,
              FromDate, ToDate, Reason)
-            VALUES (%s, %s, %s, 'PENDING', 'PENDING', %s, %s, %s)
+            VALUES (%s,%s,%s,'PENDING','PENDING',%s,%s,%s)
             """,
             (
                 data.student_id,
@@ -550,19 +557,31 @@ def apply_leave(data: LeaveApply):
             )
         )
 
+        # ✅ GET TOKEN BEFORE COMMIT
+        cursor.execute(
+            "SELECT FcmToken FROM Users WHERE UserId=%s",
+            (prof[0],)
+        )
+        prof_token = cursor.fetchone()
+
         conn.commit()
+
+        # ✅ SEND AFTER COMMIT
+        if prof_token and prof_token[0]:
+            send_fcm(
+                prof_token[0],
+                "New Leave Request",
+                f"Student {data.student_id} applied leave"
+            )
+
         return {"message": "Leave applied"}
 
-    except HTTPException:
-        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
     finally:
-        conn.close()
-
-
-# =====================================================
+        conn.close()# =====================================================
 # STUDENT LEAVE VIEWS
 # =====================================================
 @app.get("/student/rejected/{student_id}")
@@ -605,8 +624,9 @@ def student_approved(student_id: int):
         conn.close()
 
 
-@app.get("/student/leaves/{student_id}")
-def student_leaves(student_id: int):
+@app.get("/student/leaves")
+def student_leaves(authorization: str = Header(None)):
+    student_id = get_user_from_token(authorization)
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -637,7 +657,12 @@ def student_leaves(student_id: int):
 # EMERGENCY LEAVE
 # =====================================================
 @app.post("/leave/emergency")
-def emergency_leave(data: EmergencyLeave):
+
+def emergency_leave(
+    data: EmergencyLeave,
+    authorization: str = Header(None)
+):
+    data.student_id= get_user_from_token(authorization)
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -676,7 +701,23 @@ def emergency_leave(data: EmergencyLeave):
             )
         )
 
+ # 🔥 GET DEAN TOKEN BEFORE COMMIT
+        cursor.execute(
+            "SELECT FcmToken FROM Users WHERE UserId=%s",
+            (dean[0],)
+        )
+        dean_token = cursor.fetchone()
+
         conn.commit()
+
+        # 🔥 SEND NOTIFICATION TO DEAN
+        if dean_token and dean_token[0]:
+            send_fcm(
+                dean_token[0],
+                "🚨 Emergency Leave",
+                f"Student {data.student_id} applied emergency leave"
+            )
+
         return {"message": "Emergency leave sent"}
 
     except HTTPException:
@@ -778,10 +819,7 @@ def dean_students():
 
 @app.post("/leave/dean-action")
 def dean_action(data: Action):
-    """
-    Dean approves/rejects leave.
-    Sends parent notification via Brevo.
-    """
+
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -792,7 +830,6 @@ def dean_action(data: Action):
             else "REJECTED_BY_DEAN"
         )
 
-        # Update leave
         cursor.execute(
             """
             UPDATE LeaveApplications
@@ -816,7 +853,6 @@ def dean_action(data: Action):
         )
         row = cursor.fetchone()
 
-        conn.commit()
 
         # Send parent email via Brevo
         email_sent = False
@@ -832,20 +868,36 @@ def dean_action(data: Action):
                 )
             except Exception as mail_err:
                 print(f"Parent Email Error: {mail_err}")
+ 
 
+        # ✅ GET STUDENT TOKEN
+        cursor.execute(
+            "SELECT u.FcmToken FROM LeaveApplications l "
+            "JOIN Users u ON l.StudentId=u.UserId "
+            "WHERE l.LeaveId=%s",
+            (data.leave_id,)
+        )
+        student = cursor.fetchone()
+
+        conn.commit()
+        # ✅ SEND FCM
+        if student and student[0]:
+            send_fcm(
+                student[0],
+                "Leave Status",
+                f"Your leave is {status}"
+            )
+           
         return {
-            "message": f"Dean action done ({status})",
-            "parent_email_sent": email_sent
-        }
-
-    except HTTPException:
-        raise
+                        "message": f"Dean action done ({status})",
+                        "parent_email_sent": email_sent
+                    }
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
     finally:
         conn.close()
-
 
 @app.get("/dean/semester-wise")
 def semester_wise():
@@ -972,6 +1024,7 @@ def professor_students(professor_id: int):
 
 @app.post("/leave/professor-action")
 def professor_action(data: Action):
+
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -991,16 +1044,28 @@ def professor_action(data: Action):
             (status, final_status, data.leave_id)
         )
 
+        # ✅ GET DEAN TOKEN
+        cursor.execute("SELECT FcmToken FROM Users WHERE Role='DEAN'")
+        dean = cursor.fetchone()
+
         conn.commit()
+
+        # ✅ SEND AFTER COMMIT
+        if dean and dean[0]:
+            send_fcm(
+                dean[0],
+                "Leave Approved by Professor",
+                f"Leave ID {data.leave_id} forwarded to you"
+            )
+
         return {"message": "Done"}
 
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
     finally:
         conn.close()
-
-
 # =====================================================
 # USER PROFILE
 # =====================================================
@@ -1097,10 +1162,128 @@ def get_profile(authorization: str = Header(None)):
     finally:
         conn.close()
 
+#==========================================================
+# ===============================
+# ADD PROFESSOR (DEAN)
+# ==========================================================
+# ADD PROFESSOR (DEAN)
+# ==========================================================
 
+class ProfessorCreate(BaseModel):
+    full_name: str
+    email: str
+
+
+@app.post("/dean/add-professor")
+def add_professor(prof: ProfessorCreate):
+
+    conn = get_connection()
+
+    try:
+        cursor = conn.cursor()
+
+        # check email already exists
+        cursor.execute(
+            "SELECT UserId FROM Users WHERE Email=%s",
+            (prof.email,)
+        )
+
+        if cursor.fetchone():
+            raise HTTPException(
+                status_code=400,
+                detail="Email already exists"
+            )
+
+        # insert into Users
+        cursor.execute(
+            """
+            INSERT INTO Users (FullName, Email, Role, IsActive, CreatedAt)
+            VALUES (%s,%s,'PROFESSOR',1,GETDATE())
+            """,
+            (prof.full_name, prof.email)
+        )
+
+        # get new professor id
+        cursor.execute("SELECT SCOPE_IDENTITY()")
+        professor_id = cursor.fetchone()[0]
+
+        # generate professor code
+        professor_code = f"PROF{int(professor_id):04d}"
+
+        # insert into ProfessorProfile
+        cursor.execute(
+            """
+            INSERT INTO ProfessorProfile
+            (ProfessorId, ProfessorCode, Email)
+            VALUES (%s,%s,%s)
+            """,
+            (
+                professor_id,
+                professor_code,
+                prof.email
+            )
+        )
+
+        conn.commit()
+
+        return {
+            "message": "Professor added successfully",
+            "professor_id": professor_id,
+            "professor_code": professor_code
+        }
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        conn.close()
+#==========================================================
+#============================fcm tocken==============================
+class SaveToken(BaseModel):
+    user_id: int
+    fcm_token: str
+
+@app.post("/save-fcm-token")
+def save_fcm_token(
+    data: SaveToken,
+    authorization: str = Header(None)
+):
+    data.user_id = get_user_from_token(authorization)
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "UPDATE Users SET FcmToken=%s WHERE UserId=%s",
+            (data.fcm_token, data.user_id)
+        )
+
+        conn.commit()
+        return {"message": "Token saved"}
+
+    finally:
+        conn.close()
+#=======================================================
+def send_fcm(token, title, body):
+    try:
+        message = messaging.Message(
+            notification=messaging.Notification(
+                title=title,
+                body=body,
+            ),
+            token=token,
+        )
+
+        response = messaging.send(message)
+        print("FCM sent:", response)
+
+    except Exception as e:
+        print("FCM ERROR:", e)
 # =====================================================
 # RUN
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("new3:app", host="0.0.0.0", port=8000, reload=True)
