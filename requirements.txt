@@ -4,3 +4,4 @@ pymssql
 pydantic
 gunicorn
 requests
+firebase-admin
