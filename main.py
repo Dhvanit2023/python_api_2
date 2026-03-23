@@ -1,4 +1,3 @@
-
 import pymssql
 import random
 import uuid
@@ -10,13 +9,13 @@ from typing import Optional
 import os
 import firebase_admin
 from firebase_admin import credentials, messaging
-import os
 import json
 
+# 🔥 Firebase Setup
 firebase_key = json.loads(os.environ["FIREBASE_KEY"])
-
 cred = credentials.Certificate(firebase_key)
 firebase_admin.initialize_app(cred)
+
 # =====================================================
 # CONFIG
 # =====================================================
@@ -28,11 +27,10 @@ BREVO_SENDER_NAME = "College ERP System"
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
 # --- Database Config ---
-DB_SERVER = "kano2026.mssql.somee.com"
+DB_SERVER = "kano2026.mssql.somee.com:1433"   # ✅ fixed
 DB_USER = "Dhvanit_SQLLogin_1"
 DB_PASSWORD = os.getenv("PASS")
 DB_NAME = "kano2026"
-
 # =====================================================
 # FASTAPI APP
 # =====================================================
