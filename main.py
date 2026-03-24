@@ -1,3 +1,4 @@
+
 import pymssql
 import random
 import uuid
@@ -9,7 +10,7 @@ from typing import Optional
 import os
 import firebase_admin
 from firebase_admin import credentials, messaging
-import json
+
 
 # 🔥 Firebase Setup
 firebase_key = json.loads(os.environ["FIREBASE_KEY"])
@@ -31,6 +32,8 @@ DB_SERVER = "kano2026.mssql.somee.com:1433"   # ✅ fixed
 DB_USER = "Dhvanit_SQLLogin_1"
 DB_PASSWORD = os.getenv("PASS")
 DB_NAME = "kano2026"
+# =====================================================
+
 # =====================================================
 # FASTAPI APP
 # =====================================================
@@ -555,24 +558,17 @@ def apply_leave(
             )
         )
 
-        # ✅ GET TOKEN BEFORE COMMIT
+            # Inside @app.post("/leave/apply")
         cursor.execute(
-            "SELECT FcmToken FROM Users WHERE UserId=%s",
-            (prof[0],)
+            "SELECT p.FcmToken FROM Users p "
+            "JOIN StudentProfessorMapping sp ON p.UserId = sp.ProfessorId "
+            "WHERE sp.StudentId = %s", 
+            (data.student_id,)
         )
         prof_token = cursor.fetchone()
 
-        conn.commit()
-
-        # ✅ SEND AFTER COMMIT
         if prof_token and prof_token[0]:
-            send_fcm(
-                prof_token[0],
-                "New Leave Request",
-                f"Student {data.student_id} applied leave"
-            )
-
-        return {"message": "Leave applied"}
+            send_fcm(prof_token[0], "New Leave Request", f"Student {data.student_id} has applied for leave.")
 
     except Exception as e:
         conn.rollback()
@@ -697,27 +693,13 @@ def emergency_leave(
                 data.to_date,
                 data.reason
             )
-        )
-
- # 🔥 GET DEAN TOKEN BEFORE COMMIT
-        cursor.execute(
-            "SELECT FcmToken FROM Users WHERE UserId=%s",
-            (dean[0],)
-        )
+                )
+        # Inside @app.post("/leave/emergency")
+        cursor.execute("SELECT FcmToken FROM Users WHERE Role='DEAN'")
         dean_token = cursor.fetchone()
 
-        conn.commit()
-
-        # 🔥 SEND NOTIFICATION TO DEAN
         if dean_token and dean_token[0]:
-            send_fcm(
-                dean_token[0],
-                "🚨 Emergency Leave",
-                f"Student {data.student_id} applied emergency leave"
-            )
-
-        return {"message": "Emergency leave sent"}
-
+            send_fcm(dean_token[0], "🚨 EMERGENCY LEAVE", f"Student {data.student_id} requested emergency leave.")
     except HTTPException:
         raise
     except Exception as e:
@@ -884,7 +866,18 @@ def dean_action(data: Action):
                 student[0],
                 "Leave Status",
                 f"Your leave is {status}"
-            )
+                    )
+        # Inside @app.post("/leave/dean-action")
+        cursor.execute(
+            "SELECT FcmToken FROM Users WHERE UserId = "
+            "(SELECT StudentId FROM LeaveApplications WHERE LeaveId = %s)",
+            (data.leave_id,)
+        )
+        student_token = cursor.fetchone()
+
+        if student_token and student_token[0]:
+            status_msg = "Approved" if data.action == "APPROVED" else "Rejected"
+            send_fcm(student_token[0], "Leave Decision", f"The Dean has {status_msg} your leave request.")
            
         return {
                         "message": f"Dean action done ({status})",
@@ -1042,22 +1035,14 @@ def professor_action(data: Action):
             (status, final_status, data.leave_id)
         )
 
-        # ✅ GET DEAN TOKEN
-        cursor.execute("SELECT FcmToken FROM Users WHERE Role='DEAN'")
-        dean = cursor.fetchone()
-
-        conn.commit()
-
-        # ✅ SEND AFTER COMMIT
-        if dean and dean[0]:
-            send_fcm(
-                dean[0],
-                "Leave Approved by Professor",
-                f"Leave ID {data.leave_id} forwarded to you"
-            )
-
-        return {"message": "Done"}
-
+        # Inside @app.post("/leave/professor-action")
+        if data.action == "APPROVED":
+            # Get the Dean's token (assuming there is one Dean or a specific DeanId)
+            cursor.execute("SELECT FcmToken FROM Users WHERE Role='DEAN'")
+            dean_token = cursor.fetchone()
+            
+            if dean_token and dean_token[0]:
+                send_fcm(dean_token[0], "Leave Forwarded", f"Professor approved Leave ID {data.leave_id}. Action required.")
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -1244,23 +1229,25 @@ class SaveToken(BaseModel):
 
 @app.post("/save-fcm-token")
 def save_fcm_token(
-    data: SaveToken,
-    authorization: str = Header(None)
+    data: SaveToken, 
+    authorization: str = Header(None) # FastAPI looks for 'Authorization' header
 ):
-    data.user_id = get_user_from_token(authorization)
+    # This line triggers the 401 if 'authorization' is missing or token is invalid
+    user_id_from_db = get_user_from_token(authorization) 
 
     conn = get_connection()
     try:
         cursor = conn.cursor()
-
+        # Use the ID from the token for better security
         cursor.execute(
             "UPDATE Users SET FcmToken=%s WHERE UserId=%s",
-            (data.fcm_token, data.user_id)
+            (data.fcm_token, user_id_from_db)
         )
-
         conn.commit()
-        return {"message": "Token saved"}
-
+        return {"message": "Token saved successfully"}
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail="Database error")
     finally:
         conn.close()
 #=======================================================
@@ -1273,12 +1260,11 @@ def send_fcm(token, title, body):
             ),
             token=token,
         )
-
         response = messaging.send(message)
-        print("FCM sent:", response)
-
+        print(f"✅ FCM sent successfully: {response}")
     except Exception as e:
-        print("FCM ERROR:", e)
+        # This is where your 'Permission denied' error is coming from
+        print(f"❌ FCM FATAL ERROR: {str(e)}")
 # =====================================================
 # RUN
 # =====================================================
