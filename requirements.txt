@@ -1,7 +1,8 @@
 fastapi
 uvicorn[standard]
+gunicorn
 pymssql
 pydantic
-gunicorn
 requests
 firebase-admin
+python-dotenv
