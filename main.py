@@ -559,7 +559,7 @@ def apply_leave(
         )
 
             # Inside @app.post("/leave/apply")
-      cursor.execute(
+cursor.execute(
     """
     SELECT f.FcmToken 
     FROM FcmTokens f
