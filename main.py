@@ -10,7 +10,7 @@ from typing import Optional
 import os
 import firebase_admin
 from firebase_admin import credentials, messaging
-
+import json
 
 # 🔥 Firebase Setup
 firebase_key = json.loads(os.environ["FIREBASE_KEY"])
@@ -32,6 +32,8 @@ DB_SERVER = "kano2026.mssql.somee.com:1433"   # ✅ fixed
 DB_USER = "Dhvanit_SQLLogin_1"
 DB_PASSWORD = os.getenv("PASS")
 DB_NAME = "kano2026"
+# =====================================================
+
 # =====================================================
 # FASTAPI APP
 # =====================================================
@@ -567,8 +569,7 @@ def apply_leave(
 
         if prof_token and prof_token[0]:
             send_fcm(prof_token[0], "New Leave Request", f"Student {data.student_id} has applied for leave.")
-            conn.commit()
-            return {"message": "Leave applied successfully"}
+
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -617,35 +618,52 @@ def student_approved(student_id: int):
         conn.close()
 
 
-@app.get("/student/leaves")
-def student_leaves(authorization: str = Header(None)):
-    student_id = get_user_from_token(authorization)
+@app.get("/student/leaves/{student_id}") # ✅ Added {student_id} to match Flutter
+def student_leaves(student_id: int):      # ✅ Accepting ID as a parameter
     conn = get_connection()
     try:
         cursor = conn.cursor()
+        # Fetching TOP 5 to keep the dashboard clean
         cursor.execute(
             """
-            SELECT LeaveId, ProfessorStatus,
-                   DeanStatus, FinalStatus
+            SELECT TOP 5 
+                LeaveId, ProfessorStatus, DeanStatus, FinalStatus, FromDate, ToDate, Reason
             FROM LeaveApplications
             WHERE StudentId=%s
+            ORDER BY LeaveId DESC
             """,
             (student_id,)
         )
         rows = cursor.fetchall()
-        return [
-            {
+        
+        results = []
+        for r in rows:
+            # --- STATUS MINING LOGIC ---
+            # This tells the student exactly who needs to take action next
+            if r[3] == 'PENDING' and r[1] == 'PENDING':
+                mining_status = "Waiting for Professor"
+            elif r[1] == 'APPROVED' and r[2] == 'PENDING':
+                mining_status = "Waiting for Dean"
+            elif r[3] == 'FINAL_APPROVED':
+                mining_status = "Approved ✅"
+            elif 'REJECTED' in r[3]:
+                mining_status = "Rejected ❌"
+            else:
+                mining_status = r[3] # Fallback to FinalStatus
+
+            results.append({
                 "leave_id": r[0],
                 "professor_status": r[1],
                 "dean_status": r[2],
-                "final_status": r[3]
-            }
-            for r in rows
-        ]
+                "final_status": r[3],
+                "display_status": mining_status, # ✅ NEW: Send this to Flutter
+                "from_date": str(r[4]),
+                "to_date": str(r[5]),
+                "reason": r[6]
+            })
+        return results
     finally:
         conn.close()
-
-
 # =====================================================
 # EMERGENCY LEAVE
 # =====================================================
@@ -1269,4 +1287,4 @@ def send_fcm(token, title, body):
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("new3:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=7860)
