@@ -1241,9 +1241,7 @@ def add_professor(prof: ProfessorCreate):
 #==========================================================
 #============================fcm tocken==============================
 class SaveToken(BaseModel):
-    user_id: int
     fcm_token: str
-
 @app.post("/save-fcm-token")
 def save_fcm_token(
     data: SaveToken, 
@@ -1256,6 +1254,13 @@ def save_fcm_token(
     try:
         cursor = conn.cursor()
         # Use the ID from the token for better security
+        # 🔥 remove same token from other users
+        cursor.execute(
+            "UPDATE Users SET FcmToken=NULL WHERE FcmToken=%s",
+            (data.fcm_token,)
+        )
+
+        # 🔥 save token for current user
         cursor.execute(
             "UPDATE Users SET FcmToken=%s WHERE UserId=%s",
             (data.fcm_token, user_id_from_db)
