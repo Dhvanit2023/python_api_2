@@ -1246,25 +1246,39 @@ class SaveToken(BaseModel):
 def save_fcm_token(data: SaveToken, authorization: str = Header(None)):
     user_id = get_user_from_token(authorization) 
     conn = get_connection()
+    # Force autocommit to False to ensure our manual commit works
+    conn.autocommit(False) 
+    
     try:
         cursor = conn.cursor()
-        # Only NULL the token if it belongs to a DIFFERENT user
-        # This prevents unnecessary database writes if switching back and forth
-        cursor.execute(
-            "UPDATE Users SET FcmToken=NULL WHERE FcmToken=%s AND UserId != %s",
-            (data.fcm_token, user_id)
-        )
+        
+        # DEBUG: Check if token exists before we do anything
+        print(f"DEBUG: User {user_id} is trying to save token: {data.fcm_token[:15]}...")
 
+        # STEP 1: Wipe this token from anyone else (prevent duplicates)
         cursor.execute(
-            "UPDATE Users SET FcmToken=%s WHERE UserId=%s",
+            "UPDATE Users SET FcmToken = NULL WHERE FcmToken = %s AND UserId != %s",
             (data.fcm_token, user_id)
         )
-        conn.commit()
-        print(f"✅ Token updated for User ID: {user_id}")
-        return {"message": "Token saved"}
+        print(f"DEBUG: Cleaned up token from other users. Rows affected: {cursor.rowcount}")
+
+        # STEP 2: Update current user
+        cursor.execute(
+            "UPDATE Users SET FcmToken = %s WHERE UserId = %s",
+            (data.fcm_token, user_id)
+        )
+        print(f"DEBUG: Updated token for User {user_id}. Rows affected: {cursor.rowcount}")
+
+        # STEP 3: THE MOST IMPORTANT PART
+        conn.commit() 
+        print(f"✅ COMMIT SUCCESSFUL for User ID: {user_id}")
+        
+        return {"message": "Token saved successfully"}
+
     except Exception as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+        conn.rollback()
+        print(f"❌ DATABASE ERROR: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 #=======================================================
