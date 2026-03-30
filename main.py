@@ -1257,9 +1257,9 @@ def save_fcm_token(
         cursor = conn.cursor()
         # Use the ID from the token for better security
         cursor.execute(
-            "UPDATE Users SET FcmToken=%s WHERE UserId=%s",
-            (data.fcm_token, user_id_from_db)
-        )
+    "INSERT INTO FcmTokens (UserId, FcmToken) VALUES (%s, %s)",
+    (user_id_from_db, data.fcm_token)
+)
         conn.commit()
         return {"message": "Token saved successfully"}
     except Exception as e:
