@@ -1243,30 +1243,25 @@ def add_professor(prof: ProfessorCreate):
 class SaveToken(BaseModel):
     fcm_token: str
 @app.post("/save-fcm-token")
-def save_fcm_token(
-    data: SaveToken, 
-    authorization: str = Header(None) # FastAPI looks for 'Authorization' header
-):
-    # This line triggers the 401 if 'authorization' is missing or token is invalid
-    user_id_from_db = get_user_from_token(authorization) 
-
+def save_fcm_token(data: SaveToken, authorization: str = Header(None)):
+    user_id = get_user_from_token(authorization) 
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        # Use the ID from the token for better security
-        # 🔥 remove same token from other users
+        # Only NULL the token if it belongs to a DIFFERENT user
+        # This prevents unnecessary database writes if switching back and forth
         cursor.execute(
-            "UPDATE Users SET FcmToken=NULL WHERE FcmToken=%s",
-            (data.fcm_token,)
+            "UPDATE Users SET FcmToken=NULL WHERE FcmToken=%s AND UserId != %s",
+            (data.fcm_token, user_id)
         )
 
-        # 🔥 save token for current user
         cursor.execute(
             "UPDATE Users SET FcmToken=%s WHERE UserId=%s",
-            (data.fcm_token, user_id_from_db)
+            (data.fcm_token, user_id)
         )
         conn.commit()
-        return {"message": "Token saved successfully"}
+        print(f"✅ Token updated for User ID: {user_id}")
+        return {"message": "Token saved"}
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail="Database error")
