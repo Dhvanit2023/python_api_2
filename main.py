@@ -560,16 +560,16 @@ def apply_leave(
 
             # Inside @app.post("/leave/apply")
         cursor.execute(
-            "SELECT p.FcmToken FROM Users p "
-            "JOIN StudentProfessorMapping sp ON p.UserId = sp.ProfessorId "
-            "WHERE sp.StudentId = %s", 
-            (data.student_id,)
+        "SELECT FcmToken FROM Users WHERE UserId=%s",
+        (prof[0],)
         )
         prof_token = cursor.fetchone()
 
         if prof_token and prof_token[0]:
-            send_fcm(prof_token[0], "New Leave Request", f"Student {data.student_id} has applied for leave.")
-
+            send_fcm(prof_token[0],"New Leave Request",f"Student {data.student_id} has applied for leave.")
+        conn.commit()
+        
+        return {"message": "Leave applied successfully"}
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -835,7 +835,7 @@ def dean_action(data: Action):
             """,
             (status, final_status, data.leave_id)
         )
-
+        conn.commit()
         # Get student + parent info
         cursor.execute(
             """
@@ -1051,7 +1051,7 @@ def professor_action(data: Action):
             """,
             (status, final_status, data.leave_id)
         )
-
+        conn.commit()
         # Inside @app.post("/leave/professor-action")
         if data.action == "APPROVED":
             # Get the Dean's token (assuming there is one Dean or a specific DeanId)
@@ -1246,38 +1246,22 @@ class SaveToken(BaseModel):
 def save_fcm_token(data: SaveToken, authorization: str = Header(None)):
     user_id = get_user_from_token(authorization) 
     conn = get_connection()
-    # Force autocommit to False to ensure our manual commit works
-    conn.autocommit(False) 
-    
     try:
         cursor = conn.cursor()
-        
-        # DEBUG: Check if token exists before we do anything
-        print(f"DEBUG: User {user_id} is trying to save token: {data.fcm_token[:15]}...")
-
-        # STEP 1: Wipe this token from anyone else (prevent duplicates)
+        # 1. Remove this device token from any other user (Switching logic)
         cursor.execute(
             "UPDATE Users SET FcmToken = NULL WHERE FcmToken = %s AND UserId != %s",
             (data.fcm_token, user_id)
         )
-        print(f"DEBUG: Cleaned up token from other users. Rows affected: {cursor.rowcount}")
-
-        # STEP 2: Update current user
+        # 2. Assign token to the current user
         cursor.execute(
             "UPDATE Users SET FcmToken = %s WHERE UserId = %s",
             (data.fcm_token, user_id)
         )
-        print(f"DEBUG: Updated token for User {user_id}. Rows affected: {cursor.rowcount}")
-
-        # STEP 3: THE MOST IMPORTANT PART
-        conn.commit() 
-        print(f"✅ COMMIT SUCCESSFUL for User ID: {user_id}")
-        
-        return {"message": "Token saved successfully"}
-
+        conn.commit() # IMPORTANT
+        return {"status": "success", "message": "Token updated"}
     except Exception as e:
         conn.rollback()
-        print(f"❌ DATABASE ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
