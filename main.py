@@ -667,20 +667,19 @@ def student_leaves(student_id: int):      # ✅ Accepting ID as a parameter
 # =====================================================
 # EMERGENCY LEAVE
 # =====================================================
-@app.post("/leave/emergency")
 
+@app.post("/leave/emergency")
 def emergency_leave(
     data: EmergencyLeave,
     authorization: str = Header(None)
 ):
-    data.student_id= get_user_from_token(authorization)
+    data.student_id = get_user_from_token(authorization)
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT ProfessorId FROM StudentProfessorMapping "
-            "WHERE StudentId=%s",
+            "SELECT ProfessorId FROM StudentProfessorMapping WHERE StudentId=%s",
             (data.student_id,)
         )
         prof = cursor.fetchone()
@@ -689,10 +688,7 @@ def emergency_leave(
         dean = cursor.fetchone()
 
         if not prof or not dean:
-            raise HTTPException(
-                status_code=400,
-                detail="Configuration error"
-            )
+            raise HTTPException(status_code=400, detail="Configuration error")
 
         cursor.execute(
             """
@@ -702,21 +698,23 @@ def emergency_leave(
              FromDate, ToDate, Reason)
             VALUES (%s, %s, %s, 'SKIPPED', 'PENDING', %s, %s, %s)
             """,
-            (
-                data.student_id,
-                prof[0],
-                dean[0],
-                data.from_date,
-                data.to_date,
-                data.reason
-            )
-                )
-        # Inside @app.post("/leave/emergency")
+            (data.student_id, prof[0], dean[0],
+             data.from_date, data.to_date, data.reason)
+        )
+        conn.commit()  # ✅ Moved outside the if block
+
+        # Notify Dean
         cursor.execute("SELECT FcmToken FROM Users WHERE Role='DEAN'")
         dean_token = cursor.fetchone()
-
         if dean_token and dean_token[0]:
-            send_fcm(dean_token[0], "🚨 EMERGENCY LEAVE", f"Student {data.student_id} requested emergency leave.")
+            send_fcm(
+                dean_token[0],
+                "🚨 EMERGENCY LEAVE",
+                f"Student {data.student_id} requested emergency leave."
+            )
+
+        return {"message": "Emergency leave applied"}  # ✅ Always returns
+
     except HTTPException:
         raise
     except Exception as e:
@@ -724,7 +722,6 @@ def emergency_leave(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
-
 
 # =====================================================
 # DEAN APIs
@@ -1032,7 +1029,6 @@ def professor_students(professor_id: int):
 
 @app.post("/leave/professor-action")
 def professor_action(data: Action):
-
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -1052,18 +1048,23 @@ def professor_action(data: Action):
             (status, final_status, data.leave_id)
         )
         conn.commit()
-        # Inside @app.post("/leave/professor-action")
+
+        # ✅ Notify Dean only if approved — but always return a response
         if data.action == "APPROVED":
-            # Get the Dean's token (assuming there is one Dean or a specific DeanId)
             cursor.execute("SELECT FcmToken FROM Users WHERE Role='DEAN'")
             dean_token = cursor.fetchone()
-            
             if dean_token and dean_token[0]:
-                send_fcm(dean_token[0], "Leave Forwarded", f"Professor approved Leave ID {data.leave_id}. Action required.")
+                send_fcm(
+                    dean_token[0],
+                    "Leave Forwarded",
+                    f"Professor approved Leave ID {data.leave_id}. Action required."
+                )
+
+        return {"message": f"Professor action done ({status})"}  # ✅ Always returns
+
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
     finally:
         conn.close()
 # =====================================================
@@ -1249,16 +1250,16 @@ def save_fcm_token(data: SaveToken, authorization: str = Header(None)):
     try:
         cursor = conn.cursor()
         # 1. Remove this device token from any other user (Switching logic)
+                # This runs BEFORE commit, so the token isn't saved yet when you query it back
         cursor.execute(
             "UPDATE Users SET FcmToken = NULL WHERE FcmToken = %s AND UserId != %s",
             (data.fcm_token, user_id)
         )
-        # 2. Assign token to the current user
         cursor.execute(
             "UPDATE Users SET FcmToken = %s WHERE UserId = %s",
             (data.fcm_token, user_id)
         )
-        conn.commit() # IMPORTANT
+        conn.commit()
         return {"status": "success", "message": "Token updated"}
     except Exception as e:
         conn.rollback()
