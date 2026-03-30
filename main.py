@@ -716,7 +716,14 @@ def emergency_leave(
             )
                 )
         # Inside @app.post("/leave/emergency")
-        cursor.execute("SELECT FcmToken FROM Users WHERE Role='DEAN'")
+        cursor.execute(
+    """
+    SELECT f.FcmToken 
+    FROM FcmTokens f
+    JOIN Users u ON f.UserId = u.UserId
+    WHERE u.Role='DEAN'
+    """
+)
         dean_token = cursor.fetchone()
 
         if dean_token and dean_token[0]:
