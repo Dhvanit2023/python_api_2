@@ -12,10 +12,11 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 
 
-cred = credentials.Certificate("myleavemapp-firebase-adminsdk-fbsvc-487a02b175.json")
+# 🔥 Firebase Setup
+firebase_key = json.loads(os.environ["FIREBASE_KEY"])
+cred = credentials.Certificate(firebase_key)
+firebase_admin.initialize_app(cred)
 
-if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred)
 # =====================================================
 # CONFIG
 # =====================================================
@@ -31,9 +32,6 @@ DB_SERVER = "kano2026.mssql.somee.com:1433"   # ✅ fixed
 DB_USER = "Dhvanit_SQLLogin_1"
 DB_PASSWORD = os.getenv("PASS")
 DB_NAME = "kano2026"
-# =====================================================
-
-
 # =====================================================
 # FASTAPI APP
 # =====================================================
