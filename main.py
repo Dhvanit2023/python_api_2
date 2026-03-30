@@ -1258,24 +1258,41 @@ class SaveToken(BaseModel):
 @app.post("/save-fcm-token")
 def save_fcm_token(
     data: SaveToken, 
-    authorization: str = Header(None) # FastAPI looks for 'Authorization' header
+    authorization: str = Header(None)
 ):
-    # This line triggers the 401 if 'authorization' is missing or token is invalid
     user_id_from_db = get_user_from_token(authorization) 
 
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        # Use the ID from the token for better security
+
+        print("Saving token:", user_id_from_db, data.fcm_token)
+
+        # 🔥 remove same token from other users
         cursor.execute(
-    "INSERT INTO FcmTokens (UserId, FcmToken) VALUES (%s, %s)",
-    (user_id_from_db, data.fcm_token)
-)
+            "DELETE FROM FcmTokens WHERE FcmToken=%s",
+            (data.fcm_token,)
+        )
+
+        # 🔥 remove old token of this user
+        cursor.execute(
+            "DELETE FROM FcmTokens WHERE UserId=%s",
+            (user_id_from_db,)
+        )
+
+        # 🔥 insert new token
+        cursor.execute(
+            "INSERT INTO FcmTokens (UserId, FcmToken) VALUES (%s, %s)",
+            (user_id_from_db, data.fcm_token)
+        )
+
         conn.commit()
         return {"message": "Token saved successfully"}
+
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail="Database error")
+
     finally:
         conn.close()
 #=======================================================
