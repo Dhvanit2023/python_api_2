@@ -10,13 +10,12 @@ from typing import Optional
 import os
 import firebase_admin
 from firebase_admin import credentials, messaging
-import json
 
-# 🔥 Firebase Setup
-firebase_key = json.loads(os.environ["FIREBASE_KEY"])
-cred = credentials.Certificate(firebase_key)
-firebase_admin.initialize_app(cred)
 
+cred = credentials.Certificate("myleavemapp-firebase-adminsdk-fbsvc-487a02b175.json")
+
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
 # =====================================================
 # CONFIG
 # =====================================================
@@ -33,6 +32,7 @@ DB_USER = "Dhvanit_SQLLogin_1"
 DB_PASSWORD = os.getenv("PASS")
 DB_NAME = "kano2026"
 # =====================================================
+
 
 # =====================================================
 # FASTAPI APP
@@ -559,21 +559,18 @@ def apply_leave(
         )
 
             # Inside @app.post("/leave/apply")
-cursor.execute(
-    """
-    SELECT f.FcmToken 
-    FROM FcmTokens f
-    JOIN StudentProfessorMapping sp 
-        ON f.UserId = sp.ProfessorId
-    WHERE sp.StudentId = %s
-    """,
-    (data.student_id,)
-)
+        cursor.execute(
+            "SELECT p.FcmToken FROM Users p "
+            "JOIN StudentProfessorMapping sp ON p.UserId = sp.ProfessorId "
+            "WHERE sp.StudentId = %s", 
+            (data.student_id,)
+        )
         prof_token = cursor.fetchone()
 
         if prof_token and prof_token[0]:
             send_fcm(prof_token[0], "New Leave Request", f"Student {data.student_id} has applied for leave.")
-
+            conn.commit()
+            return {"message": "Leave applied successfully"}
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -622,52 +619,35 @@ def student_approved(student_id: int):
         conn.close()
 
 
-@app.get("/student/leaves/{student_id}") # ✅ Added {student_id} to match Flutter
-def student_leaves(student_id: int):      # ✅ Accepting ID as a parameter
+@app.get("/student/leaves")
+def student_leaves(authorization: str = Header(None)):
+    student_id = get_user_from_token(authorization)
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        # Fetching TOP 5 to keep the dashboard clean
         cursor.execute(
             """
-            SELECT TOP 5 
-                LeaveId, ProfessorStatus, DeanStatus, FinalStatus, FromDate, ToDate, Reason
+            SELECT LeaveId, ProfessorStatus,
+                   DeanStatus, FinalStatus
             FROM LeaveApplications
             WHERE StudentId=%s
-            ORDER BY LeaveId DESC
             """,
             (student_id,)
         )
         rows = cursor.fetchall()
-        
-        results = []
-        for r in rows:
-            # --- STATUS MINING LOGIC ---
-            # This tells the student exactly who needs to take action next
-            if r[3] == 'PENDING' and r[1] == 'PENDING':
-                mining_status = "Waiting for Professor"
-            elif r[1] == 'APPROVED' and r[2] == 'PENDING':
-                mining_status = "Waiting for Dean"
-            elif r[3] == 'FINAL_APPROVED':
-                mining_status = "Approved ✅"
-            elif 'REJECTED' in r[3]:
-                mining_status = "Rejected ❌"
-            else:
-                mining_status = r[3] # Fallback to FinalStatus
-
-            results.append({
+        return [
+            {
                 "leave_id": r[0],
                 "professor_status": r[1],
                 "dean_status": r[2],
-                "final_status": r[3],
-                "display_status": mining_status, # ✅ NEW: Send this to Flutter
-                "from_date": str(r[4]),
-                "to_date": str(r[5]),
-                "reason": r[6]
-            })
-        return results
+                "final_status": r[3]
+            }
+            for r in rows
+        ]
     finally:
         conn.close()
+
+
 # =====================================================
 # EMERGENCY LEAVE
 # =====================================================
@@ -716,14 +696,7 @@ def emergency_leave(
             )
                 )
         # Inside @app.post("/leave/emergency")
-        cursor.execute(
-    """
-    SELECT f.FcmToken 
-    FROM FcmTokens f
-    JOIN Users u ON f.UserId = u.UserId
-    WHERE u.Role='DEAN'
-    """
-)
+        cursor.execute("SELECT FcmToken FROM Users WHERE Role='DEAN'")
         dean_token = cursor.fetchone()
 
         if dean_token and dean_token[0]:
@@ -1258,41 +1231,24 @@ class SaveToken(BaseModel):
 @app.post("/save-fcm-token")
 def save_fcm_token(
     data: SaveToken, 
-    authorization: str = Header(None)
+    authorization: str = Header(None) # FastAPI looks for 'Authorization' header
 ):
+    # This line triggers the 401 if 'authorization' is missing or token is invalid
     user_id_from_db = get_user_from_token(authorization) 
 
     conn = get_connection()
     try:
         cursor = conn.cursor()
-
-        print("Saving token:", user_id_from_db, data.fcm_token)
-
-        # 🔥 remove same token from other users
+        # Use the ID from the token for better security
         cursor.execute(
-            "DELETE FROM FcmTokens WHERE FcmToken=%s",
-            (data.fcm_token,)
+            "UPDATE Users SET FcmToken=%s WHERE UserId=%s",
+            (data.fcm_token, user_id_from_db)
         )
-
-        # 🔥 remove old token of this user
-        cursor.execute(
-            "DELETE FROM FcmTokens WHERE UserId=%s",
-            (user_id_from_db,)
-        )
-
-        # 🔥 insert new token
-        cursor.execute(
-            "INSERT INTO FcmTokens (UserId, FcmToken) VALUES (%s, %s)",
-            (user_id_from_db, data.fcm_token)
-        )
-
         conn.commit()
         return {"message": "Token saved successfully"}
-
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail="Database error")
-
     finally:
         conn.close()
 #=======================================================
