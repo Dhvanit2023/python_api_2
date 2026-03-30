@@ -559,12 +559,16 @@ def apply_leave(
         )
 
             # Inside @app.post("/leave/apply")
-        cursor.execute(
-            "SELECT p.FcmToken FROM Users p "
-            "JOIN StudentProfessorMapping sp ON p.UserId = sp.ProfessorId "
-            "WHERE sp.StudentId = %s", 
-            (data.student_id,)
-        )
+      cursor.execute(
+    """
+    SELECT f.FcmToken 
+    FROM FcmTokens f
+    JOIN StudentProfessorMapping sp 
+        ON f.UserId = sp.ProfessorId
+    WHERE sp.StudentId = %s
+    """,
+    (data.student_id,)
+)
         prof_token = cursor.fetchone()
 
         if prof_token and prof_token[0]:
