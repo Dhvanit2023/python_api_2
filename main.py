@@ -8,9 +8,11 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Optional
 import os
+import os
 import firebase_admin
 from firebase_admin import credentials, messaging
-import json
+
+
 
 # 🔥 Firebase Setup
 firebase_key = json.loads(os.environ["FIREBASE_KEY"])
@@ -40,10 +42,18 @@ DB_NAME = "kano2026"
 app = FastAPI(title="College ERP Backend")
 
 
+
 # =====================================================
 # DATABASE CONNECTION
 # =====================================================
+# Use connection pooling
+from queue import Queue
+
+connection_pool = Queue(maxsize=5)
+
 def get_connection():
+    if not connection_pool.empty():
+        return connection_pool.get()
     return pymssql.connect(
         server=DB_SERVER,
         user=DB_USER,
@@ -51,6 +61,8 @@ def get_connection():
         database=DB_NAME
     )
 
+def return_connection(conn):
+    connection_pool.put(conn)
 
 # =====================================================
 # BREVO EMAIL — CORE FUNCTION
@@ -160,6 +172,7 @@ class StudentRegister(BaseModel):
     semester: int
     student_email: str
     parent_email: str
+    phone_no:str
 
 class SendOTP(BaseModel):
     email: str
@@ -301,9 +314,9 @@ def student_register(data: StudentRegister):
 
         # Insert user
         cursor.execute(
-            "INSERT INTO Users (FullName, Email, Role) "
-            "VALUES (%s, %s, 'STUDENT')",
-            (data.fullname, data.student_email)
+            "INSERT INTO Users (FullName, Email, Role, PhoneNumber) "
+            "VALUES (%s, %s, 'STUDENT', %s)",
+            (data.fullname, data.student_email, data.phone_no)
         )
 
         # Get new user ID
@@ -381,7 +394,7 @@ def student_register(data: StudentRegister):
 # =====================================================
 # AUTH — SEND OTP (via Brevo)
 # =====================================================
-@app.post("/auth/send-otp")
+'''@app.post("/auth/send-otp")
 def send_otp(data: SendOTP):
     conn = get_connection()
     try:
@@ -432,8 +445,104 @@ def send_otp(data: SendOTP):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
+'''
+@app.post("/auth/send-otp")
+def send_otp(data: SendOTP):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
 
+        # =========================
+        # 🔍 GET USER + PHONE
+        # =========================
+        cursor.execute(
+            "SELECT UserId, PhoneNumber FROM Users WHERE Email=%s AND IsActive=1",
+            (data.email,)
+        )
+        user = cursor.fetchone()
 
+        if not user:
+            raise HTTPException(
+                status_code=404,
+                detail="User not found"
+            )
+
+        user_id = user[0]
+        phone = user[1]
+
+        # =========================
+        # 🔐 GENERATE OTP
+        # =========================
+        otp = generate_otp()
+        expiry = datetime.now() + timedelta(minutes=5)
+
+        # =========================
+        # 💾 SAVE OTP
+        # =========================
+        cursor.execute(
+            "INSERT INTO EmailOTP (Email, OTPCode, ExpiryTime) VALUES (%s, %s, %s)",
+            (data.email, otp, expiry)
+        )
+        conn.commit()
+
+        # =========================
+        # ✅ EMAIL (MANDATORY)
+        # =========================
+        email_sent = send_otp_email(data.email, otp)
+
+        if not email_sent:
+            raise HTTPException(
+                status_code=500,
+                detail="Email sending failed"
+            )
+
+        # =========================
+        # ⚠️ SMS (OPTIONAL)
+        # =========================
+        sms_status = "no phone"
+
+        print("Fetched Phone:", phone)  # DEBUG
+
+        if phone and phone.strip() != "" and phone != "None":
+            try:
+                message = f"Wel-come-to-collage-leave-management-system-Your-OTP-is:{otp}-This-OTP-Valid-For-5-Minutes-This-is-own-sms-service-for-education-purpose-only"
+
+                sms_url = (
+                    "https://6qc7h5fcwkof.share.zrok.io/"
+                    f"?key=12345&phone={phone}&msg={message}"
+                )
+
+                print("SMS URL:", sms_url)  # DEBUG
+
+                res = requests.get(sms_url, timeout=5)
+
+                print("SMS Response:", res.status_code, res.text)  # DEBUG
+
+                if res.status_code == 200:
+                    sms_status = "sent"
+                else:
+                    sms_status = "failed"
+
+            except Exception as e:
+                print("SMS ERROR:", e)
+                sms_status = "failed"
+        # =========================
+        # 🎯 RESPONSE
+        # =========================
+        return {
+            "message": "OTP sent to Email (SMS optional)",
+            "email": "sent",
+            "sms": sms_status,
+            "phone_used": phone  # debug (optional remove later)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 # =====================================================
 # AUTH — VERIFY OTP
 # =====================================================
@@ -1282,8 +1391,425 @@ def send_fcm(token, title, body):
         # This is where your 'Permission denied' error is coming from
         print(f"❌ FCM FATAL ERROR: {str(e)}")
 # =====================================================
+#=============== extar report =========================
+#all student 
+@app.get("/reports/students")
+def all_students_report():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            u.UserId,
+            u.FullName,
+            sp.Semester,
+
+            COUNT(l.LeaveId) AS total,
+
+            ISNULL(SUM(CASE WHEN l.DeanStatus='APPROVED' THEN 1 END),0) AS approved,
+            ISNULL(SUM(CASE WHEN l.DeanStatus='REJECTED' THEN 1 END),0) AS rejected,
+            ISNULL(SUM(CASE WHEN l.DeanStatus='PENDING' THEN 1 END),0) AS pending
+
+        FROM StudentProfile sp
+        JOIN Users u ON sp.StudentId = u.UserId
+
+        LEFT JOIN LeaveApplications l 
+            ON l.StudentId = sp.StudentId
+
+        GROUP BY u.UserId, u.FullName, sp.Semester
+        ORDER BY sp.Semester ASC, u.FullName ASC
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "student_id": r[0],
+            "name": r[1],
+            "semester": r[2],
+            "total": r[3],
+            "approved": r[4],
+            "rejected": r[5],
+            "pending": r[6]
+        }
+        for r in rows
+    ]
+#Student-wise Leave Report
+@app.get("/reports/student/{student_id}")
+def student_report(student_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            COUNT(*) as total,
+
+            ISNULL(SUM(CASE WHEN DeanStatus='APPROVED' THEN 1 END),0),
+            ISNULL(SUM(CASE WHEN DeanStatus='REJECTED' THEN 1 END),0),
+            ISNULL(SUM(CASE WHEN DeanStatus='PENDING' THEN 1 END),0)
+
+        FROM LeaveApplications
+        WHERE StudentId = %s
+    """, (student_id,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return {
+        "student_id": student_id,
+        "total": row[0],
+        "approved": row[1],
+        "rejected": row[2],
+        "pending": row[3]
+    }
+#Monthly Report
+@app.get("/reports/monthly")
+def monthly_report():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            FORMAT(CreatedAt, 'yyyy-MM') AS month,
+
+            COUNT(*) AS total,
+
+            ISNULL(SUM(CASE WHEN DeanStatus='APPROVED' THEN 1 END),0) AS approved,
+            ISNULL(SUM(CASE WHEN DeanStatus='REJECTED' THEN 1 END),0) AS rejected,
+            ISNULL(SUM(CASE WHEN DeanStatus='PENDING' THEN 1 END),0) AS pending
+
+        FROM LeaveApplications
+
+        GROUP BY FORMAT(CreatedAt, 'yyyy-MM')
+        ORDER BY FORMAT(CreatedAt, 'yyyy-MM')
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "month": r[0],
+            "total": r[1],
+            "approved": r[2],
+            "rejected": r[3],
+            "pending": r[4]
+        }
+        for r in rows
+    ]
+#Semester-wise Report
+@app.get("/reports/semester")
+def semester_report():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            sp.Semester,
+
+            COUNT(l.LeaveId) AS total,
+
+            ISNULL(SUM(CASE WHEN l.DeanStatus='APPROVED' THEN 1 END),0) AS approved,
+            ISNULL(SUM(CASE WHEN l.DeanStatus='REJECTED' THEN 1 END),0) AS rejected,
+            ISNULL(SUM(CASE WHEN l.DeanStatus='PENDING' THEN 1 END),0) AS pending
+
+        FROM StudentProfile sp
+        LEFT JOIN LeaveApplications l 
+            ON l.StudentId = sp.StudentId
+
+        GROUP BY sp.Semester
+        ORDER BY sp.Semester ASC
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "semester": r[0],
+            "total": r[1],
+            "approved": r[2],
+            "rejected": r[3],
+            "pending": r[4]
+        }
+        for r in rows
+    ]
+#Emergency Leave Report
+@app.get("/reports/emergency")
+def emergency_report():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            FORMAT(CreatedAt, 'yyyy-MM') AS month,
+
+            COUNT(*) AS total,
+
+            ISNULL(SUM(CASE WHEN DeanStatus='APPROVED' THEN 1 END),0) AS approved,
+            ISNULL(SUM(CASE WHEN DeanStatus='REJECTED' THEN 1 END),0) AS rejected,
+            ISNULL(SUM(CASE WHEN DeanStatus='PENDING' THEN 1 END),0) AS pending
+
+        FROM LeaveApplications
+
+        WHERE ProfessorStatus = 'SKIPPED'
+        GROUP BY FORMAT(CreatedAt, 'yyyy-MM')
+        ORDER BY FORMAT(CreatedAt, 'yyyy-MM')
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "month": r[0],
+            "total_emergency": r[1],
+            "approved": r[2],
+            "rejected": r[3],
+            "pending": r[4]
+        }
+        for r in rows
+    ]
+#Top Leave Students
+@app.get("/reports/top-students")
+def top_students():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT TOP 5 
+            u.FullName,
+            sp.Semester,
+            COUNT(l.LeaveId) AS total
+
+        FROM LeaveApplications l
+
+        JOIN Users u 
+            ON l.StudentId = u.UserId
+
+        JOIN StudentProfile sp 
+            ON sp.StudentId = u.UserId
+
+        GROUP BY u.FullName, sp.Semester
+
+        ORDER BY COUNT(l.LeaveId) DESC
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "name": r[0],
+            "semester": r[1],
+            "total": r[2]
+        }
+        for r in rows
+    ]
+#Professor Performance
+@app.get("/reports/professor-performance")
+def professor_performance():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            u.FullName,
+            COUNT(l.LeaveId) AS total,
+            ISNULL(SUM(CASE WHEN l.ProfessorStatus='PENDING' THEN 1 END),0) AS pending
+        FROM ProfessorProfile p
+        JOIN Users u ON p.ProfessorId = u.UserId
+        LEFT JOIN LeaveApplications l 
+            ON l.ProfessorId = p.ProfessorId
+        GROUP BY u.FullName
+        ORDER BY total DESC
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "professor": r[0],
+            "total_requests": r[1],
+            "pending": r[2]
+        }
+        for r in rows
+    ]
+#Chart Data API (Important)
+@app.get("/reports/chart")
+def chart_data():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            ISNULL(SUM(CASE WHEN FinalStatus='APPROVED' THEN 1 END),0),
+            ISNULL(SUM(CASE WHEN FinalStatus='REJECTED' THEN 1 END),0)
+        FROM LeaveApplications
+    """)
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return {
+        "approved": row[0],
+        "rejected": row[1]
+    }
+#Suspicious Students
+@app.get("/reports/suspicious")
+def suspicious_students():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT StudentId, COUNT(*)
+        FROM LeaveApplications
+        WHERE MONTH(CreatedAt) = MONTH(GETDATE())
+          AND YEAR(CreatedAt) = YEAR(GETDATE())
+        GROUP BY StudentId
+        HAVING COUNT(*) > 5
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [{"student_id": r[0], "leaves": r[1]} for r in rows]
+
+#long pending leaves
+@app.get("/reports/pending-critical")
+def pending_critical():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            StudentId,
+            DATEDIFF(DAY, CreatedAt, GETDATE()) as delay
+        FROM LeaveApplications
+        WHERE DeanStatus='PENDING'
+          AND DATEDIFF(DAY, CreatedAt, GETDATE()) > 3
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [{"student_id": r[0], "delay_days": r[1]} for r in rows]
+#daily report
+@app.get("/reports/daily")
+def daily_report():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            COUNT(*),
+            ISNULL(SUM(CASE WHEN DeanStatus='APPROVED' THEN 1 END),0),
+            ISNULL(SUM(CASE WHEN DeanStatus='REJECTED' THEN 1 END),0)
+        FROM LeaveApplications
+        WHERE CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)
+    """)
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return {
+        "today_total": row[0],
+        "approved": row[1],
+        "rejected": row[2]
+    }
+#DAILY semester-wise report
+@app.get("/reports/daily-semester")
+def daily_semester_report():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            sp.Semester,
+
+            COUNT(l.LeaveId) AS total,
+
+            ISNULL(SUM(CASE WHEN l.DeanStatus='APPROVED' THEN 1 END),0) AS approved,
+            ISNULL(SUM(CASE WHEN l.DeanStatus='REJECTED' THEN 1 END),0) AS rejected,
+            ISNULL(SUM(CASE WHEN l.DeanStatus='PENDING' THEN 1 END),0) AS pending
+
+        FROM StudentProfile sp
+
+        LEFT JOIN LeaveApplications l 
+            ON l.StudentId = sp.StudentId
+            AND CAST(l.CreatedAt AS DATE) = CAST(GETDATE() AS DATE)
+
+        GROUP BY sp.Semester
+        ORDER BY sp.Semester ASC
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "semester": r[0],
+            "today_total": r[1],
+            "approved": r[2],
+            "rejected": r[3],
+            "pending": r[4]
+        }
+        for r in rows
+    ]
+#inside report
+@app.get("/reports/insight")
+def insight():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # 🔹 1. Highest Leave Semester (this month)
+    cursor.execute("""
+        SELECT TOP 1 
+            sp.Semester,
+            COUNT(*) as total
+        FROM LeaveApplications l
+        JOIN StudentProfile sp ON l.StudentId = sp.StudentId
+        WHERE MONTH(l.CreatedAt) = MONTH(GETDATE())
+          AND YEAR(l.CreatedAt) = YEAR(GETDATE())
+        GROUP BY sp.Semester
+        ORDER BY total DESC
+    """)
+    sem_row = cursor.fetchone()
+
+    # 🔹 2. High Risk Student (this month)
+    cursor.execute("""
+        SELECT TOP 1 
+            l.StudentId,
+            COUNT(*) as total
+        FROM LeaveApplications l
+        WHERE MONTH(l.CreatedAt) = MONTH(GETDATE())
+          AND YEAR(l.CreatedAt) = YEAR(GETDATE())
+        GROUP BY l.StudentId
+        ORDER BY total DESC
+    """)
+    stu_row = cursor.fetchone()
+
+    conn.close()
+
+    # 🔹 Safe handling
+    semester_msg = "No data"
+    student_msg = "No risk detected"
+
+    if sem_row:
+        semester_msg = f"Semester {sem_row[0]} has highest leaves ({sem_row[1]}) this month"
+
+    if stu_row and stu_row[1] >= 5:
+        student_msg = f"⚠️ Student ID {stu_row[0]} is high-risk with {stu_row[1]} leaves"
+
+    return {
+        "message": semester_msg,
+        "warning": student_msg
+    }
+#========================================================
 # RUN
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=7860)
+    uvicorn.run("new_fcm:app", host="0.0.0.0", port=7860)
