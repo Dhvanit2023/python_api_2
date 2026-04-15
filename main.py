@@ -1812,4 +1812,4 @@ def insight():
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("new_fcm:app", host="0.0.0.0", port=7860)
+    uvicorn.run("app:app", host="0.0.0.0", port=7860)
