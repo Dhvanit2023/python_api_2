@@ -514,7 +514,7 @@ def send_otp(data: SendOTP):
 
                 print("SMS URL:", sms_url)  # DEBUG
 
-                res = requests.get(sms_url, timeout=5)
+                res = requests.get(sms_url, timeout=20)
 
                 print("SMS Response:", res.status_code, res.text)  # DEBUG
 
