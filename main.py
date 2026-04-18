@@ -8,9 +8,9 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Optional
 import os
+import re
 import firebase_admin
 from firebase_admin import credentials, messaging
-import json
 
 
 
@@ -36,11 +36,12 @@ DB_PASSWORD = os.getenv("PASS")
 DB_NAME = "kano2026"
 # =====================================================
 
+
+
 # =====================================================
 # FASTAPI APP
 # =====================================================
 app = FastAPI(title="College ERP Backend")
-
 
 
 # =====================================================
@@ -446,6 +447,7 @@ def send_otp(data: SendOTP):
     finally:
         conn.close()
 '''
+'''
 @app.post("/auth/send-otp")
 def send_otp(data: SendOTP):
     conn = get_connection()
@@ -513,7 +515,6 @@ def send_otp(data: SendOTP):
                 )
 
                 print("SMS URL:", sms_url)  # DEBUG
-
                 res = requests.get(sms_url, timeout=20)
 
                 print("SMS Response:", res.status_code, res.text)  # DEBUG
@@ -541,6 +542,137 @@ def send_otp(data: SendOTP):
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+'''
+import re
+# =========================
+# 📦 GLOBAL SMS QUEUE
+# =========================
+sms_queue = []
+
+# =========================
+# 📦 REQUEST MODEL
+# =========================
+class SendOTP(BaseModel):
+    email: str
+
+# =========================
+# 📥 ANDROID FETCH SMS
+# =========================
+@app.get("/get-sms")
+def get_sms():
+    global sms_queue
+
+    data = sms_queue.copy()
+    sms_queue.clear()   # ✅ clear after sending
+
+    print("📤 SENT TO ANDROID:", data)
+
+    return data
+# =========================
+# 📱 PHONE VALIDATION
+# =========================
+def is_valid_phone(phone: str) -> bool:
+    # Accept 10-digit Indian numbers (adjust if needed)
+    return bool(re.fullmatch(r"\d{10}", phone))
+
+
+# =========================
+# 📤 SEND OTP
+# =========================
+@app.post("/auth/send-otp")
+def send_otp(data: SendOTP):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+
+        # =========================
+        # 🔍 GET USER + PHONE
+        # =========================
+        cursor.execute(
+            "SELECT UserId, PhoneNumber FROM Users WHERE Email=%s AND IsActive=1",
+            (data.email,)
+        )
+        user = cursor.fetchone()
+
+        print("RAW USER:", user)
+
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        phone = user[1]
+        print("📱 PHONE FROM DB:", phone, type(phone))
+
+        # =========================
+        # 🔐 GENERATE OTP
+        # =========================
+        otp = generate_otp()
+        expiry = datetime.now() + timedelta(minutes=5)
+
+        # =========================
+        # 💾 SAVE OTP
+        # =========================
+        cursor.execute(
+            "INSERT INTO EmailOTP (Email, OTPCode, ExpiryTime) VALUES (%s, %s, %s)",
+            (data.email, otp, expiry)
+        )
+        conn.commit()
+
+        # =========================
+        # 📧 SEND EMAIL
+        # =========================
+        email_sent = send_otp_email(data.email, otp)
+
+        if not email_sent:
+            raise HTTPException(status_code=500, detail="Email failed")
+
+        # =========================
+        # 📤 SMS QUEUE WITH CHECK
+        # =========================
+        sms_status = "no phone"
+
+        if phone is None:
+            print("❌ Phone is NULL")
+
+        else:
+            phone = str(phone).strip()
+
+            if phone == "":
+                print("❌ Phone is EMPTY")
+
+            elif not is_valid_phone(phone):
+                print("❌ Invalid phone format:", phone)
+
+            else:
+                # ✅ VALID PHONE
+                message = f"OTP:{otp}"
+
+                print("QUEUE BEFORE:", sms_queue)
+
+                sms_queue.append({
+                    "phone": phone,
+                    "msg": message
+                })
+
+                print("✅ SMS QUEUED:", sms_queue)
+
+                sms_status = "queued"
+
+        # =========================
+        # 🎯 RESPONSE
+        # =========================
+        return {
+            "message": "OTP sent (Email + SMS check)",
+            "email": "sent",
+            "sms": sms_status,
+            "phone_checked": phone
+        }
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
     finally:
         conn.close()
 # =====================================================
@@ -1812,4 +1944,4 @@ def insight():
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=7860)
+    uvicorn.run("new_fcm:app", host="0.0.0.0", port=7860)
