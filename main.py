@@ -1286,7 +1286,7 @@ def professor_action(data: Action):
             SET ProfessorStatus=%s, FinalStatus=%s,DeanStatus=%s,
             WHERE LeaveId=%s
             """,
-            (status, final_status,'PENDING'data.leave_id)
+            (status, final_status,'PENDING',data.leave_id)
         )
         conn.commit()
 
