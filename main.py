@@ -787,7 +787,7 @@ def apply_leave(
             (StudentId, ProfessorId, DeanId,
              ProfessorStatus, DeanStatus,
              FromDate, ToDate, Reason)
-            VALUES (%s,%s,%s,'PENDING','NOTGO',%s,%s,%s)
+            VALUES (%s,%s,%s,'PENDING','PENDING',%s,%s,%s)
             """,
             (
                 data.student_id,
@@ -1283,10 +1283,10 @@ def professor_action(data: Action):
         cursor.execute(
             """
             UPDATE LeaveApplications
-            SET ProfessorStatus=%s, FinalStatus=%s,DeanStatus=%s,
+            SET ProfessorStatus=%s, FinalStatus=%s,
             WHERE LeaveId=%s
             """,
-            (status, final_status,'PENDING',data.leave_id)
+            (status, final_status,data.leave_id)
         )
         conn.commit()
 
