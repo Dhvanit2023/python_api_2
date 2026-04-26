@@ -787,7 +787,7 @@ def apply_leave(
             (StudentId, ProfessorId, DeanId,
              ProfessorStatus, DeanStatus,
              FromDate, ToDate, Reason)
-            VALUES (%s,%s,%s,'PENDING','PENDING',%s,%s,%s)
+            VALUES (%s,%s,%s,'PENDING','NOT_APPLY',%s,%s,%s)
             """,
             (
                 data.student_id,
@@ -1267,45 +1267,52 @@ def professor_students(professor_id: int):
     finally:
         conn.close()
 
-
 @app.post("/leave/professor-action")
 def professor_action(data: Action):
     conn = get_connection()
     try:
         cursor = conn.cursor()
 
-        status = "APPROVED" if data.action == "APPROVED" else "REJECTED"
-        final_status = (
-            "FORWARDED_TO_DEAN" if status == "APPROVED"
-            else "REJECTED_BY_PROFESSOR"
-        )
+        if data.action == "APPROVED":
+            cursor.execute("""
+                UPDATE LeaveApplications
+                SET 
+                    ProfessorStatus = 'APPROVED',
+                    DeanStatus = 'PENDING',   -- 🔥 MAIN FIX
+                    FinalStatus = 'FORWARDED_TO_DEAN'
+                WHERE LeaveId = %s
+            """, (data.leave_id,))
 
-        cursor.execute(
-            """
-            UPDATE LeaveApplications
-            SET ProfessorStatus=%s, FinalStatus=%s,
-            WHERE LeaveId=%s
-            """,
-            (status, final_status,data.leave_id)
-        )
+        else:  # REJECTED
+            cursor.execute("""
+                UPDATE LeaveApplications
+                SET 
+                    ProfessorStatus = 'REJECTED',
+                    DeanStatus = 'NOT_APPLY',  -- ❌ dean will not see
+                    FinalStatus = 'REJECTED_BY_PROFESSOR'
+                WHERE LeaveId = %s
+            """, (data.leave_id,))
+
         conn.commit()
 
-        # ✅ Notify Dean only if approved — but always return a response
+        # ✅ Notify Dean only if approved
         if data.action == "APPROVED":
             cursor.execute("SELECT FcmToken FROM Users WHERE Role='DEAN'")
             dean_token = cursor.fetchone()
+
             if dean_token and dean_token[0]:
                 send_fcm(
                     dean_token[0],
                     "Leave Forwarded",
-                    f"Professor approved Leave ID {data.leave_id}. Action required."
+                    f"Professor approved Leave ID {data.leave_id}"
                 )
 
-        return {"message": f"Professor action done ({status})"}  # ✅ Always returns
+        return {"message": f"Professor action done ({data.action})"}
 
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
     finally:
         conn.close()
 # =====================================================
