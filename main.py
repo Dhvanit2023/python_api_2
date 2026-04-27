@@ -13,7 +13,6 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 import json
 
-
 # 🔥 Firebase Setup
 firebase_key = json.loads(os.environ["FIREBASE_KEY"])
 cred = credentials.Certificate(firebase_key)
@@ -1040,7 +1039,7 @@ def dean_students():
             """
             SELECT u.UserId, u.FullName, s.RollNo,
                    s.RegistrationNo, s.Semester,
-                   s.StudentEmail, s.ParentEmail
+                   s.StudentEmail, s.ParentEmail,u.PhoneNumber
             FROM Users u
             JOIN StudentProfile s ON u.UserId = s.StudentId
             WHERE u.Role='STUDENT' AND u.IsActive=1
@@ -1155,7 +1154,7 @@ def semester_wise():
             SELECT s.Semester,
                    u.FullName AS StudentName,
                    s.RollNo,
-                   pUser.FullName AS ProfessorName
+                   pUser.FullName AS ProfessorName,s.RegistrationNo
             FROM StudentProfessorMapping sp
             JOIN Users u ON sp.StudentId = u.UserId
             JOIN StudentProfile s ON s.StudentId = u.UserId
@@ -1203,7 +1202,7 @@ def professor_approved(professor_id: int):
         cursor.execute(
             """
             SELECT l.LeaveId, u.FullName, s.Semester,
-                   l.FromDate, l.ToDate
+                   l.FromDate, l.ToDate,l.Reason AS Reason
             FROM LeaveApplications l
             JOIN Users u ON l.StudentId = u.UserId
             JOIN StudentProfile s ON s.StudentId = l.StudentId
@@ -1226,7 +1225,7 @@ def professor_rejected(professor_id: int):
         cursor.execute(
             """
             SELECT l.LeaveId, u.FullName, s.Semester,
-                   l.FromDate, l.ToDate
+                   l.FromDate, l.ToDate,l.Reason AS Reason
             FROM LeaveApplications l
             JOIN Users u ON l.StudentId = u.UserId
             JOIN StudentProfile s ON s.StudentId = l.StudentId
@@ -1248,25 +1247,40 @@ def professor_students(professor_id: int):
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT sp.Semester,
-                   COUNT(*) AS total_students
+            SELECT 
+                u.FullName,
+                s.RollNo,
+                s.RegistrationNo,
+                u.Email,
+                
+                s.ParentEmail,
+                s.Semester,
+                u.PhoneNumber
             FROM StudentProfessorMapping sp
+            JOIN Users u ON sp.StudentId = u.UserId
+            JOIN StudentProfile s ON s.StudentId = sp.StudentId
             WHERE sp.ProfessorId=%s
-            GROUP BY sp.Semester
+            ORDER BY s.Semester
             """,
             (professor_id,)
         )
         rows = cursor.fetchall()
+
         return [
             {
-                "semester": r[0],
-                "total_students": r[1]
+                "name": r[0],
+                "roll_no": r[1],
+                "register_no": r[2],
+                "email": r[3],
+                "parent_email": r[4],
+                "semester": r[5],
+                "phone": r[6],
             }
             for r in rows
         ]
+
     finally:
         conn.close()
-
 @app.post("/leave/professor-action")
 def professor_action(data: Action):
     conn = get_connection()
@@ -1803,18 +1817,52 @@ def suspicious_students():
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT StudentId, COUNT(*)
-        FROM LeaveApplications
-        WHERE MONTH(CreatedAt) = MONTH(GETDATE())
-          AND YEAR(CreatedAt) = YEAR(GETDATE())
-        GROUP BY StudentId
-        HAVING COUNT(*) > 5
-    """)
+    SELECT 
+        u.UserId,
+        u.FullName,
+        sp.RollNo,
+                   sp.Semester,
+        u.Email,
+        sp.ParentEmail,
+        COUNT(l.LeaveId) AS total_leaves
 
+    FROM LeaveApplications l
+
+    JOIN Users u 
+        ON l.StudentId = u.UserId
+
+    JOIN StudentProfile sp 
+        ON sp.StudentId = u.UserId
+
+    WHERE MONTH(l.CreatedAt) = MONTH(GETDATE())
+      AND YEAR(l.CreatedAt) = YEAR(GETDATE())
+
+    GROUP BY 
+        u.UserId,
+        u.FullName,
+        sp.RollNo,
+        sp.Semester,
+        u.Email,
+        sp.ParentEmail
+
+    HAVING COUNT(l.LeaveId) > 10
+""")
+    
     rows = cursor.fetchall()
     conn.close()
 
-    return [{"student_id": r[0], "leaves": r[1]} for r in rows]
+    return [
+    {
+        "student_id": r[0],
+        "name": r[1],
+        "roll_no": r[2],
+        "Semester": r[3],
+        "email": r[4],
+        "parent_email": r[5],
+        "leaves": r[6]
+    }
+    for r in rows
+]
 
 #long pending leaves
 @app.get("/reports/pending-critical")
@@ -1853,8 +1901,10 @@ def daily_report():
     row = cursor.fetchone()
     conn.close()
 
+
     return {
-        "today_total": row[0],
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "today_total": row[0] or 0,
         "approved": row[1],
         "rejected": row[2]
     }
@@ -1951,4 +2001,4 @@ def insight():
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=7860)
+    uvicorn.run("github_f:app", host="0.0.0.0", port=7860)
