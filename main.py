@@ -1366,10 +1366,29 @@ def get_profile(authorization: str = Header(None)):
         if role == "STUDENT":
             cursor.execute(
                 """
-                SELECT RollNo, RegistrationNo, Semester,
-                       StudentEmail, ParentEmail
-                FROM StudentProfile
-                WHERE StudentId=%s
+               SELECT 
+    sp.RollNo,
+    sp.RegistrationNo,
+    sp.Semester,
+
+    sp.StudentEmail,
+    sp.ParentEmail,
+
+    u.FullName AS ProfessorName,
+    pp.Email AS ProfessorEmail
+
+FROM StudentProfile sp
+
+INNER JOIN StudentProfessorMapping spm
+    ON sp.StudentId = spm.StudentId
+
+INNER JOIN ProfessorProfile pp
+    ON spm.ProfessorId = pp.ProfessorId
+
+INNER JOIN Users u
+    ON pp.ProfessorId = u.UserId
+
+WHERE sp.StudentId = %s;
                 """,
                 (user_id,)
             )
@@ -1382,6 +1401,7 @@ def get_profile(authorization: str = Header(None)):
                     "semester": data[2],
                     "student_email": data[3],
                     "parent_email": data[4],
+                    'professor_name': data[5],
                 })
 
         # PROFESSOR
@@ -1424,6 +1444,7 @@ def get_profile(authorization: str = Header(None)):
 
     finally:
         conn.close()
+
 
 #==========================================================
 # ===============================
